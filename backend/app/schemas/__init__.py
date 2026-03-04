@@ -1,22 +1,20 @@
 from app.schemas.api import (
-    UploadResponse,
     DatasetResponse,
     DatasetColumnResponse,
     QueryRequest,
     QueryResponse,
-    ScenarioRequest,
+    ScenarioCreate,
     ScenarioResponse,
     ChatRequest,
     ChatResponse,
 )
 
 __all__ = [
-    "UploadResponse",
     "DatasetResponse",
     "DatasetColumnResponse",
     "QueryRequest",
     "QueryResponse",
-    "ScenarioRequest",
+    "ScenarioCreate",
     "ScenarioResponse",
     "ChatRequest",
     "ChatResponse",
