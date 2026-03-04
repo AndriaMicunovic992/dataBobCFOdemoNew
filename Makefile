@@ -40,9 +40,7 @@ install:
 dev:
 	@echo "→ Starting PostgreSQL via docker-compose…"
 	docker-compose up -d postgres
-	@echo "→ Waiting for PostgreSQL to be ready…"
-	@until docker-compose exec -T postgres pg_isready -U databobiq -d databobiq \
-	    >/dev/null 2>&1; do printf '.'; sleep 1; done; echo " ready."
+	python scripts/wait_for_postgres.py
 	@echo "→ Running Alembic migrations…"
 	cd backend && alembic upgrade head
 	@echo "→ Starting backend on http://localhost:8000 (Ctrl-C to stop)"
