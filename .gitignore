@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+.pytest_cache/
+
+# Environment
+.env
+*.env
+
+# Uploads
+backend/uploads/*
+!backend/uploads/.gitkeep
+
+# Alembic versions (keep the directory, not auto-generated migrations)
+# Remove this line if you want to commit migrations
+# backend/alembic/versions/*.py
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker volumes
+postgres_data/
