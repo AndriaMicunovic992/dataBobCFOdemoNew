@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.database import async_engine, Base
+import app.models  # noqa: F401 – registers models with Base.metadata
 from app.api.routes import router
 
 
