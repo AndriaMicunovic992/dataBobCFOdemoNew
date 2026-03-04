@@ -185,8 +185,18 @@ function getDimFields(bl) {
   const skip = new Set(["company_id"]);
   return Object.keys(bl[0]).filter(k => !nums.has(k) && !skip.has(k) && typeof bl[0][k] !== "number").sort();
 }
-function getMeasureFields(bl) {
+function getMeasureFields(bl, schema = null) {
   if (!bl.length) return [];
+  if (schema) {
+    const measureNames = new Set(
+      Object.values(schema).flatMap(t =>
+        t.columns.filter(c => c.role === "measure").map(c => c.name)
+      )
+    );
+    const found = Object.keys(bl[0]).filter(k => measureNames.has(k));
+    if (found.length) return found;
+  }
+  // Fallback: heuristic for numeric non-id columns
   return Object.keys(bl[0]).filter(k => typeof bl[0][k] === "number" && k !== "entry_count" && !k.endsWith("_id"));
 }
 function getUniq(bl, f) { return [...new Set(bl.map(r => r[f]).filter(v => v != null))].sort(); }
@@ -915,13 +925,13 @@ function SchemaView({ tables, schema, setSchema, relationships, setRelationships
       </div>
 
       {/* Tables */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 14 }}>
         {Object.entries(schema).map(([name, info]) => (
-          <div key={name} style={{ ...S.card, borderColor: info.isFact ? C.brand + "44" : C.border }}>
+          <div key={name} style={{ ...S.card, borderColor: info.isFact ? C.brand + "44" : C.border, minWidth: 0, overflow: "hidden" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
               <span style={{ fontSize: 15, fontWeight: 700, color: C.text }}>{name}</span>
               <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                {!info.aiAnalyzed && (
+                {info.aiAnalyzing && (
                   <span style={{ ...S.badge(C.amber), fontSize: 9, animation: "pulse 1.5s infinite" }}>⏳ Analyzing…</span>
                 )}
                 <span style={S.badge(info.isFact ? C.brand : C.purple)}>{info.isFact ? "FACT" : "DIMENSION"}</span>
@@ -931,6 +941,7 @@ function SchemaView({ tables, schema, setSchema, relationships, setRelationships
               <div style={{ fontSize: 11, color: C.textSec, marginBottom: 6, fontStyle: "italic" }}>{info.aiNotes.description}</div>
             )}
             <div style={{ fontSize: 12, color: C.textMuted, marginBottom: 10 }}>{info.rowCount} rows</div>
+            <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead><tr>
                 <th style={S.th}>Column</th>
@@ -955,6 +966,7 @@ function SchemaView({ tables, schema, setSchema, relationships, setRelationships
                 </tr>
               ))}</tbody>
             </table>
+            </div>
           </div>
         ))}
       </div>
@@ -965,9 +977,9 @@ function SchemaView({ tables, schema, setSchema, relationships, setRelationships
 // ═══════════════════════════════════════════════════════════════
 // ACTUALS VIEW
 // ═══════════════════════════════════════════════════════════════
-function ActualsView({ baseline }) {
+function ActualsView({ baseline, schema }) {
   const dims = useMemo(() => getDimFields(baseline), [baseline]);
-  const measures = useMemo(() => getMeasureFields(baseline), [baseline]);
+  const measures = useMemo(() => getMeasureFields(baseline, schema), [baseline, schema]);
   const [rowFs, setRowFs] = useState(["_period"]);
   const [colF, setColF] = useState("");
   const [valF, setValF] = useState("amount");
@@ -1078,9 +1090,9 @@ function RuleFilterAdd({ dims, existingFilters, onAdd }) {
   );
 }
 
-function ScenariosView({ baseline, scenarios, setScenarios }) {
+function ScenariosView({ baseline, scenarios, setScenarios, schema }) {
   const dims = useMemo(() => getDimFields(baseline), [baseline]);
-  const measures = useMemo(() => getMeasureFields(baseline), [baseline]);
+  const measures = useMemo(() => getMeasureFields(baseline, schema), [baseline, schema]);
   const periods = useMemo(() => getUniq(baseline, "_period"), [baseline]);
 
   const [active, setActive] = useState(new Set());
@@ -1540,7 +1552,10 @@ function ChatPanel({ baseline, scenarios, setScenarios, setActiveTab, datasetId 
 
 function apiToSchema(schemaList) {
   const schema = {};
+  const _now = Date.now();
   for (const sr of schemaList) {
+    const aiAnalyzing = !sr.dataset.ai_analyzed &&
+      _now - new Date(sr.dataset.created_at).getTime() < 180_000;
     schema[sr.dataset.name] = {
       id: sr.dataset.id,
       columns: sr.columns.map(c => ({
@@ -1553,6 +1568,7 @@ function apiToSchema(schemaList) {
       isFact: sr.columns.some(c => c.column_role === "measure"),
       rowCount: sr.dataset.row_count,
       aiAnalyzed: sr.dataset.ai_analyzed,
+      aiAnalyzing,
       aiNotes: sr.dataset.ai_notes ?? null,
     };
   }
@@ -1675,8 +1691,8 @@ function UploadModal({ isOpen, onClose, onUploaded, schemaList }) {
                         <span style={{ fontWeight: 600, color: C.text }}>{sr.dataset.source_filename ?? sr.dataset.name}</span>
                         <span style={{ color: C.textMuted, marginLeft: 8 }}>{sr.dataset.row_count.toLocaleString()} rows</span>
                       </div>
-                      <span style={{ ...S.badge(analyzed ? C.green : C.amber), fontSize: 9 }}>
-                        {analyzed ? "✓ Analyzed" : "⏳ Analyzing…"}
+                      <span style={{ ...S.badge(analyzed ? C.green : (Date.now() - new Date(sr.dataset.created_at).getTime() < 180_000 ? C.amber : C.border)), fontSize: 9 }}>
+                        {analyzed ? "✓ Analyzed" : (Date.now() - new Date(sr.dataset.created_at).getTime() < 180_000 ? "⏳ Analyzing…" : "—")}
                       </span>
                       {isDeleting ? (
                         <button onClick={() => handleDelete(sr.dataset.id)} style={{ ...S.btn("danger", true), fontSize: 11, padding: "3px 10px" }}>Confirm</button>
@@ -1720,7 +1736,8 @@ function UploadModal({ isOpen, onClose, onUploaded, schemaList }) {
               {queue.map(item => {
                 const analyzing = item.status === "done" && item.datasetIds.some(id => {
                   const sr = schemaList.find(s => s.dataset.id === id);
-                  return sr && !sr.dataset.ai_analyzed;
+                  return sr && !sr.dataset.ai_analyzed &&
+                    Date.now() - new Date(sr.dataset.created_at).getTime() < 180_000;
                 });
                 const fullyDone = item.status === "done" && !analyzing;
                 return (
@@ -1841,7 +1858,11 @@ export default function App() {
     staleTime: 30_000,
     refetchInterval: (query) => {
       const list = query.state.data ?? [];
-      return list.some(sr => !sr.dataset.ai_analyzed) ? 3_000 : false;
+      const now = Date.now();
+      return list.some(sr =>
+        !sr.dataset.ai_analyzed &&
+        now - new Date(sr.dataset.created_at).getTime() < 180_000
+      ) ? 3_000 : false;
     },
   });
 
@@ -1986,8 +2007,8 @@ export default function App() {
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
         <div style={{ flex: 1, overflow: "auto", padding: 24 }}>
           {tab === "schema" && <SchemaView tables={{}} schema={schema} setSchema={handleSetSchema} relationships={relationships} setRelationships={handleSetRelationships} onOpenUpload={() => setUploadOpen(true)} />}
-          {tab === "actuals" && <ActualsView baseline={baseline} />}
-          {tab === "scenarios" && <ScenariosView baseline={baseline} scenarios={scenarios} setScenarios={setScenarios} />}
+          {tab === "actuals" && <ActualsView baseline={baseline} schema={schema} />}
+          {tab === "scenarios" && <ScenariosView baseline={baseline} scenarios={scenarios} setScenarios={setScenarios} schema={schema} />}
         </div>
         <ChatPanel baseline={baseline} scenarios={scenarios} setScenarios={setScenarios} setActiveTab={setTab} datasetId={factDataset?.dataset.id} />
       </div>

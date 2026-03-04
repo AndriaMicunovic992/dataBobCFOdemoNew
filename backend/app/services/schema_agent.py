@@ -20,7 +20,7 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 # Hard timeout for the Claude call so uploads are never blocked indefinitely.
-_AGENT_TIMEOUT_SECONDS = 15
+_AGENT_TIMEOUT_SECONDS = 90
 
 _SYSTEM_PROMPT = """\
 You are a financial data analyst specializing in ERP and accounting exports.
