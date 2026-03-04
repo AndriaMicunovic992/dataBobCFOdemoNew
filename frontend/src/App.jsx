@@ -980,9 +980,9 @@ function SchemaView({ tables, schema, setSchema, relationships, setRelationships
 function ActualsView({ baseline, schema }) {
   const dims = useMemo(() => getDimFields(baseline), [baseline]);
   const measures = useMemo(() => getMeasureFields(baseline, schema), [baseline, schema]);
-  const [rowFs, setRowFs] = useState(["_period"]);
+  const [rowFs, setRowFs] = useState(() => []);
   const [colF, setColF] = useState("");
-  const [valF, setValF] = useState("amount");
+  const [valF, setValF] = useState(() => "");
   const [filters, setFilters] = useState({});
   const filtered = useMemo(() => applyFilters(baseline, filters), [baseline, filters]);
 
@@ -1097,9 +1097,9 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema }) {
 
   const [active, setActive] = useState(new Set());
   const [editId, setEditId] = useState(null);
-  const [rowFs, setRowFs] = useState(["_period"]);
+  const [rowFs, setRowFs] = useState(() => []);
   const [colF, setColF] = useState("");
-  const [valF, setValF] = useState("amount");
+  const [valF, setValF] = useState(() => "");
   const [filters, setFilters] = useState({});
   const [newRule, setNewRule] = useState({ name: "", type: "multiplier", factor: 1.05, offset: 0, filters: {}, periodFrom: "", periodTo: "" });
   const [ruleFilterFields, setRuleFilterFields] = useState([]);
