@@ -6,44 +6,112 @@ from typing import Any
 from pydantic import BaseModel
 
 
-# --- Upload / Dataset schemas ---
+# ---------------------------------------------------------------------------
+# Dataset
+# ---------------------------------------------------------------------------
+
+class DatasetCreate(BaseModel):
+    name: str | None = None
+
 
 class DatasetColumnResponse(BaseModel):
     id: str
-    name: str
-    original_name: str
-    dtype: str
-    position: int
+    dataset_id: str
+    column_name: str
+    display_name: str
+    data_type: str
+    column_role: str
+    unique_count: int | None = None
     sample_values: list[Any] | None = None
-    description: str | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class DatasetColumnUpdate(BaseModel):
+    column_role: str | None = None
+    display_name: str | None = None
 
 
 class DatasetResponse(BaseModel):
     id: str
-    upload_id: str
     name: str
     table_name: str
-    sheet_name: str | None = None
+    source_filename: str | None = None
     row_count: int
+    status: str
+    created_at: datetime
+    updated_at: datetime | None = None
     columns: list[DatasetColumnResponse] = []
-    created_at: datetime
 
     model_config = {"from_attributes": True}
 
 
-class UploadResponse(BaseModel):
+# ---------------------------------------------------------------------------
+# Relationships
+# ---------------------------------------------------------------------------
+
+class DatasetRelationshipCreate(BaseModel):
+    source_dataset_id: str
+    target_dataset_id: str
+    source_column: str
+    target_column: str
+
+
+class DatasetRelationshipResponse(BaseModel):
     id: str
-    filename: str
-    original_filename: str
-    file_size: int
-    content_type: str
+    source_dataset_id: str
+    target_dataset_id: str
+    source_column: str
+    target_column: str
+    coverage_pct: int | None = None
+    overlap_count: int | None = None
     created_at: datetime
-    datasets: list[DatasetResponse] = []
 
     model_config = {"from_attributes": True}
 
 
-# --- Query schemas ---
+# ---------------------------------------------------------------------------
+# Schema (dataset + columns + relationships together)
+# ---------------------------------------------------------------------------
+
+class SchemaResponse(BaseModel):
+    dataset: DatasetResponse
+    columns: list[DatasetColumnResponse]
+    relationships: list[DatasetRelationshipResponse] = []
+
+
+# ---------------------------------------------------------------------------
+# Scenario
+# ---------------------------------------------------------------------------
+
+class ScenarioCreate(BaseModel):
+    name: str
+    dataset_id: str
+    rules: list[dict[str, Any]] = []
+    color: str | None = None
+
+
+class ScenarioUpdate(BaseModel):
+    name: str | None = None
+    rules: list[dict[str, Any]] | None = None
+    color: str | None = None
+
+
+class ScenarioResponse(BaseModel):
+    id: str
+    name: str
+    dataset_id: str
+    rules: list[dict[str, Any]]
+    color: str | None = None
+    created_at: datetime
+    updated_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
+# ---------------------------------------------------------------------------
+# Query
+# ---------------------------------------------------------------------------
 
 class QueryRequest(BaseModel):
     dataset_id: str
@@ -62,22 +130,9 @@ class QueryResponse(BaseModel):
     total_rows: int
 
 
-# --- Scenario schemas ---
-
-class ScenarioRequest(BaseModel):
-    dataset_id: str
-    adjustments: dict[str, float]  # column -> percentage adjustment
-    group_by: list[str] | None = None
-
-
-class ScenarioResponse(BaseModel):
-    dataset_id: str
-    columns: list[str]
-    original: list[list[Any]]
-    scenario: list[list[Any]]
-
-
-# --- Chat schemas ---
+# ---------------------------------------------------------------------------
+# Chat
+# ---------------------------------------------------------------------------
 
 class ChatRequest(BaseModel):
     dataset_id: str

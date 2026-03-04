@@ -1,3 +1,3 @@
-from app.models.metadata import Dataset, DatasetColumn, Upload
+from app.models.metadata import Dataset, DatasetColumn, DatasetRelationship, Scenario
 
-__all__ = ["Dataset", "DatasetColumn", "Upload"]
+__all__ = ["Dataset", "DatasetColumn", "DatasetRelationship", "Scenario"]
