@@ -1,5 +1,5 @@
 {
-  "name": "cfo-companion",
+  "name": "databobiq-frontend",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@tanstack/react-query": "^5.0.0",
     "lodash": "^4.17.21",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
