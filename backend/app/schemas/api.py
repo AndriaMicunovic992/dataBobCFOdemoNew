@@ -170,6 +170,9 @@ class ScenarioResponse(BaseModel):
 class ScenarioComputeRequest(BaseModel):
     fact_dataset_id: str
     relationships: list[RelationshipRef] = []
+    value_column: str | None = None          # defaults to "amount" (auto-detected if absent)
+    group_by: list[str] | None = None        # columns for variance grouping
+    breakdown_field: str | None = None       # column for waterfall breakdown
 
 
 # ---------------------------------------------------------------------------

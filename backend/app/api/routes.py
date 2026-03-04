@@ -45,6 +45,7 @@ from app.schemas.api import (
     SchemaResponse,
 )
 from app.services import parser as parser_svc
+from app.services import scenario as scenario_svc
 from app.services import schema_agent
 from app.services import storage as storage_svc
 
@@ -227,48 +228,6 @@ async def _build_baseline_df(
     return df
 
 
-def _apply_scenario_rules(df: pl.DataFrame, rules: list[dict]) -> pl.DataFrame:
-    """Apply scenario adjustment rules to a DataFrame.
-
-    Supported rule shapes:
-      {"type": "adjust", "column": "amount", "operation": "multiply", "value": 1.1}
-      {"type": "adjust", "column": "amount", "operation": "add", "value": 500}
-      {"type": "adjust", "column": "amount", "operation": "set", "value": 0}
-      {"type": "filter",  "column": "company_id", "operation": "eq",  "value": 8}
-      {"type": "filter",  "column": "category",   "operation": "in",  "value": ["A","B"]}
-    """
-    for rule in rules:
-        col = rule.get("column")
-        op = rule.get("operation")
-        val = rule.get("value")
-        rule_type = rule.get("type", "adjust")
-
-        if col not in df.columns:
-            logger.warning("Rule column %r not in DataFrame, skipping", col)
-            continue
-
-        if rule_type == "adjust":
-            if op == "multiply":
-                df = df.with_columns((pl.col(col).cast(pl.Float64) * float(val)).alias(col))
-            elif op == "add":
-                df = df.with_columns((pl.col(col).cast(pl.Float64) + float(val)).alias(col))
-            elif op == "subtract":
-                df = df.with_columns((pl.col(col).cast(pl.Float64) - float(val)).alias(col))
-            elif op == "set":
-                df = df.with_columns(pl.lit(val).alias(col))
-
-        elif rule_type == "filter":
-            if op == "eq":
-                df = df.filter(pl.col(col) == val)
-            elif op == "in" and isinstance(val, list):
-                str_vals = [str(v) for v in val]
-                df = df.filter(pl.col(col).cast(pl.Utf8).is_in(str_vals))
-            elif op == "gt":
-                df = df.filter(pl.col(col) > val)
-            elif op == "lt":
-                df = df.filter(pl.col(col) < val)
-
-    return df
 
 
 async def _run_agent_and_persist(dataset_id: str) -> None:
@@ -856,11 +815,15 @@ async def compute_scenario(
     body: ScenarioComputeRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """Apply scenario rules to a baseline and return the modified dataset.
+    """Apply scenario rules to a baseline and return full comparison data.
 
-    Builds the enriched baseline first (fact + dimension joins), then applies
-    the scenario's adjustment/filter rules in Polars.
-    Returns ``{"columns": [...], "data": [...], "row_count": N}``.
+    1. Build enriched baseline (fact + dimension joins via Polars).
+    2. Apply rules sequentially via the Polars scenario engine.
+    3. Return:
+       - ``baseline``  – raw rows before rules
+       - ``scenario``  – raw rows after rules
+       - ``variance``  – grouped delta/delta_pct (uses ``group_by`` from request)
+       - ``waterfall`` – waterfall steps (uses ``breakdown_field`` from request)
     """
     result = await db.execute(select(Scenario).where(Scenario.id == scenario_id))
     scenario = result.scalar_one_or_none()
@@ -877,12 +840,52 @@ async def compute_scenario(
     if fact_ds is None:
         raise HTTPException(status_code=404, detail="Fact dataset not found")
 
-    df = await _build_baseline_df(fact_ds, body.relationships, db)
-    df = _apply_scenario_rules(df, scenario.rules)
+    value_col: str = body.value_column or "amount"
 
-    col_names = df.columns
-    rows = [[_json_safe(v) for v in row] for row in df.iter_rows()]
-    return {"columns": col_names, "data": rows, "row_count": len(rows)}
+    baseline_df = await _build_baseline_df(fact_ds, body.relationships, db)
+
+    # Detect an amount column if the requested one is absent
+    if value_col not in baseline_df.columns:
+        numeric_cols = [
+            c for c in baseline_df.columns
+            if baseline_df[c].dtype in (pl.Float32, pl.Float64, pl.Int32, pl.Int64)
+        ]
+        if not numeric_cols:
+            raise HTTPException(
+                status_code=422,
+                detail=f"value_column '{value_col}' not found and no numeric column available",
+            )
+        value_col = numeric_cols[0]
+        logger.info("compute_scenario: using %r as value_column", value_col)
+
+    try:
+        scenario_df = scenario_svc.apply_rules(baseline_df, scenario.rules, value_col)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Rule application failed: {exc}") from exc
+
+    def _rows(df: pl.DataFrame) -> list[list]:
+        return [[_json_safe(v) for v in row] for row in df.iter_rows()]
+
+    response: dict = {
+        "scenario_id": scenario_id,
+        "value_column": value_col,
+        "columns": scenario_df.columns,
+        "baseline": _rows(baseline_df),
+        "scenario": _rows(scenario_df),
+        "row_count": len(scenario_df),
+    }
+
+    if body.group_by:
+        response["variance"] = scenario_svc.compute_variance(
+            baseline_df, scenario_df, body.group_by, value_col
+        )
+
+    if body.breakdown_field:
+        response["waterfall"] = scenario_svc.compute_waterfall(
+            baseline_df, scenario_df, body.breakdown_field, value_col
+        )
+
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -894,10 +897,18 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
     """Stream an AI chat response as Server-Sent Events.
 
     Content-Type: text/event-stream
-    Each event: ``data: <json>\\n\\n``
-    Final event: ``data: [DONE]\\n\\n``
+
+    Event shapes (JSON ``data:`` lines):
+
+    - ``{"type": "text_delta", "text": "..."}``
+    - ``{"type": "tool_executing", "tool": "query_data", "input": {...}}``
+    - ``{"type": "tool_result", "tool": "query_data", "result": {...}}``
+    - ``{"type": "scenario_rule", "rule": {...}}``
+    - ``{"type": "done"}``
+    - ``{"type": "error", "message": "..."}``
     """
-    # Validate dataset exists
+    from app.services.chat import load_schema_info, stream_chat
+
     result = await db.execute(
         select(Dataset)
         .where(Dataset.id == request.dataset_id, Dataset.status != "deleted")
@@ -910,24 +921,14 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
     if not settings.ANTHROPIC_API_KEY_CHAT:
         raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY_CHAT is not configured")
 
-    from app.services.chat import chat_with_data
+    schema_info = load_schema_info(dataset)
 
-    async def event_stream() -> AsyncGenerator[str, None]:
-        try:
-            response = await chat_with_data(
-                dataset_id=request.dataset_id,
-                message=request.message,
-                history=request.conversation_history,
-            )
-            payload = json.dumps({"message": response.get("message", ""), "done": True})
-            yield f"data: {payload}\n\n"
-        except NotImplementedError:
-            payload = json.dumps({"error": "Chat service not yet implemented"})
-            yield f"data: {payload}\n\n"
-        except Exception as exc:
-            payload = json.dumps({"error": str(exc)})
-            yield f"data: {payload}\n\n"
-        finally:
-            yield "data: [DONE]\n\n"
-
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+    return StreamingResponse(
+        stream_chat(
+            message=request.message,
+            dataset_id=request.dataset_id,
+            history=request.conversation_history,
+            schema_info=schema_info,
+        ),
+        media_type="text/event-stream",
+    )
