@@ -897,10 +897,18 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
     """Stream an AI chat response as Server-Sent Events.
 
     Content-Type: text/event-stream
-    Each event: ``data: <json>\\n\\n``
-    Final event: ``data: [DONE]\\n\\n``
+
+    Event shapes (JSON ``data:`` lines):
+
+    - ``{"type": "text_delta", "text": "..."}``
+    - ``{"type": "tool_executing", "tool": "query_data", "input": {...}}``
+    - ``{"type": "tool_result", "tool": "query_data", "result": {...}}``
+    - ``{"type": "scenario_rule", "rule": {...}}``
+    - ``{"type": "done"}``
+    - ``{"type": "error", "message": "..."}``
     """
-    # Validate dataset exists
+    from app.services.chat import load_schema_info, stream_chat
+
     result = await db.execute(
         select(Dataset)
         .where(Dataset.id == request.dataset_id, Dataset.status != "deleted")
@@ -913,24 +921,14 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
     if not settings.ANTHROPIC_API_KEY_CHAT:
         raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY_CHAT is not configured")
 
-    from app.services.chat import chat_with_data
+    schema_info = load_schema_info(dataset)
 
-    async def event_stream() -> AsyncGenerator[str, None]:
-        try:
-            response = await chat_with_data(
-                dataset_id=request.dataset_id,
-                message=request.message,
-                history=request.conversation_history,
-            )
-            payload = json.dumps({"message": response.get("message", ""), "done": True})
-            yield f"data: {payload}\n\n"
-        except NotImplementedError:
-            payload = json.dumps({"error": "Chat service not yet implemented"})
-            yield f"data: {payload}\n\n"
-        except Exception as exc:
-            payload = json.dumps({"error": str(exc)})
-            yield f"data: {payload}\n\n"
-        finally:
-            yield "data: [DONE]\n\n"
-
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+    return StreamingResponse(
+        stream_chat(
+            message=request.message,
+            dataset_id=request.dataset_id,
+            history=request.conversation_history,
+            schema_info=schema_info,
+        ),
+        media_type="text/event-stream",
+    )
