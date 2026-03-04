@@ -23,6 +23,7 @@ class DatasetColumnResponse(BaseModel):
     column_role: str
     unique_count: int | None = None
     sample_values: list[Any] | None = None
+    ai_suggestion: dict[str, Any] | None = None
 
     model_config = {"from_attributes": True}
 
@@ -39,6 +40,8 @@ class DatasetResponse(BaseModel):
     source_filename: str | None = None
     row_count: int
     status: str
+    ai_analyzed: bool = False
+    ai_notes: dict[str, Any] | None = None
     created_at: datetime
     updated_at: datetime | None = None
     columns: list[DatasetColumnResponse] = []

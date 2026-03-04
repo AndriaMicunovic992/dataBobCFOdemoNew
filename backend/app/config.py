@@ -6,7 +6,13 @@ class Settings(BaseSettings):
 
     DATABASE_URL: str = "postgresql+asyncpg://databobiq:databobiq@localhost:5432/databobiq"
     DATABASE_URL_SYNC: str = "postgresql://databobiq:databobiq@localhost:5432/databobiq"
-    ANTHROPIC_API_KEY: str = ""
+
+    # Separate API keys for the two different AI roles.
+    # ANTHROPIC_API_KEY_CHAT  → scenario creation, general chat (services/chat.py)
+    # ANTHROPIC_API_KEY_AGENT → data-understanding agent / schema detection (services/schema_agent.py)
+    ANTHROPIC_API_KEY_CHAT: str = ""
+    ANTHROPIC_API_KEY_AGENT: str = ""
+
     UPLOAD_DIR: str = "./uploads"
     CORS_ORIGINS: str = "http://localhost:5173"
 

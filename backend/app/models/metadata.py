@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
-    String, DateTime, Integer, Text, ForeignKey, JSON, UniqueConstraint
+    Boolean, String, DateTime, Integer, Text, ForeignKey, JSON, UniqueConstraint
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -25,6 +25,9 @@ class Dataset(Base):
     source_filename: Mapped[str | None] = mapped_column(String, nullable=True)
     row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     status: Mapped[str] = mapped_column(String, nullable=False, default="processing")
+    # AI schema-agent fields
+    ai_analyzed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    ai_notes: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -72,6 +75,8 @@ class DatasetColumn(Base):
     column_role: Mapped[str] = mapped_column(String, nullable=False, default="attribute")
     unique_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     sample_values: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # AI schema-agent reasoning for this column
+    ai_suggestion: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     dataset: Mapped["Dataset"] = relationship("Dataset", back_populates="columns")
 
