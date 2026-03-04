@@ -39,8 +39,8 @@ const C = {
 const SC_COLORS = ["#6abbd9", "#7c4dff", "#f97316", "#ec4899", "#22a06b", "#eab308"];
 const ROLE_COLORS = { key: C.amber, measure: C.brand, attribute: C.textMuted, time: C.green, ignore: C.border };
 
-const fmt = n => n == null ? "—" : new Intl.NumberFormat("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
-const fmtS = n => { if (n == null) return "—"; const a = Math.abs(n); if (a >= 1e6) return (n / 1e6).toFixed(1) + "M"; if (a >= 1e3) return (n / 1e3).toFixed(1) + "K"; return n.toFixed(0); };
+const fmt = n => (n == null || isNaN(n)) ? "" : new Intl.NumberFormat("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
+const fmtS = n => { if (n == null || isNaN(n)) return ""; const a = Math.abs(n); if (a >= 1e6) return (n / 1e6).toFixed(1) + "M"; if (a >= 1e3) return (n / 1e3).toFixed(1) + "K"; return n.toFixed(0); };
 
 // ─── STYLES ─────────────────────────────────────────────────────
 const S = {
@@ -216,7 +216,7 @@ function computePivot(data, rowFs, colF, valF, sortMode = "value_desc") {
     const ck = colF ? (r[colF] ?? "—") : null;
     if (ck) colKeysSet.add(ck);
     if (!groups[rk]) { groups[rk] = { _key: rk, _total: 0 }; rowFs.forEach(f => groups[rk][f] = r[f] ?? "—"); }
-    const v = r[valF] || 0;
+    const v = +r[valF] || 0;
     groups[rk]._total += v;
     if (ck) { groups[rk][ck] = (groups[rk][ck] || 0) + v; }
   }
@@ -980,9 +980,9 @@ function SchemaView({ tables, schema, setSchema, relationships, setRelationships
 function ActualsView({ baseline, schema }) {
   const dims = useMemo(() => getDimFields(baseline), [baseline]);
   const measures = useMemo(() => getMeasureFields(baseline, schema), [baseline, schema]);
-  const [rowFs, setRowFs] = useState(["_period"]);
+  const [rowFs, setRowFs] = useState(() => []);
   const [colF, setColF] = useState("");
-  const [valF, setValF] = useState("amount");
+  const [valF, setValF] = useState(() => "");
   const [filters, setFilters] = useState({});
   const filtered = useMemo(() => applyFilters(baseline, filters), [baseline, filters]);
 
@@ -1097,9 +1097,9 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema }) {
 
   const [active, setActive] = useState(new Set());
   const [editId, setEditId] = useState(null);
-  const [rowFs, setRowFs] = useState(["_period"]);
+  const [rowFs, setRowFs] = useState(() => []);
   const [colF, setColF] = useState("");
-  const [valF, setValF] = useState("amount");
+  const [valF, setValF] = useState(() => "");
   const [filters, setFilters] = useState({});
   const [newRule, setNewRule] = useState({ name: "", type: "multiplier", factor: 1.05, offset: 0, filters: {}, periodFrom: "", periodTo: "" });
   const [ruleFilterFields, setRuleFilterFields] = useState([]);
