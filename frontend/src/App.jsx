@@ -3,7 +3,7 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, Responsive
 import _ from "lodash";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  uploadFile, getDatasets, getBaseline,
+  uploadFile, getDatasets, getBaseline, deleteDataset,
   updateColumnRole as apiUpdateColumnRole,
   createRelationship as apiCreateRelationship,
   updateRelationship as apiUpdateRelationship,
@@ -796,7 +796,7 @@ function ComparisonTable({ baseline, scenarioOutputs, rowFs, colF, valF, scenari
 // ═══════════════════════════════════════════════════════════════
 // SCHEMA VIEW (with editable roles + editable relationships)
 // ═══════════════════════════════════════════════════════════════
-function SchemaView({ tables, schema, setSchema, relationships, setRelationships }) {
+function SchemaView({ tables, schema, setSchema, relationships, setRelationships, onOpenUpload }) {
   const [addRelOpen, setAddRelOpen] = useState(false);
   const [newRel, setNewRel] = useState({ from: "", to: "", fromCol: "", toCol: "" });
   const tableNames = Object.keys(schema);
@@ -840,9 +840,14 @@ function SchemaView({ tables, schema, setSchema, relationships, setRelationships
 
   return (
     <div>
-      <div style={{ marginBottom: 20 }}>
-        <h2 style={{ fontSize: 20, fontWeight: 700, color: C.text, marginBottom: 4 }}>Data Model</h2>
-        <p style={{ color: C.textSec, fontSize: 13 }}>Auto-discovered schema. Edit roles and relationships below.</p>
+      <div style={{ marginBottom: 20, display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div>
+          <h2 style={{ fontSize: 20, fontWeight: 700, color: C.text, marginBottom: 4 }}>Data Model</h2>
+          <p style={{ color: C.textSec, fontSize: 13 }}>Auto-discovered schema. Edit roles and relationships below.</p>
+        </div>
+        {onOpenUpload && (
+          <button onClick={onOpenUpload} style={S.btn("primary", true)}>+ Upload Data</button>
+        )}
       </div>
 
       {/* Relationships */}
@@ -913,10 +918,18 @@ function SchemaView({ tables, schema, setSchema, relationships, setRelationships
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 14 }}>
         {Object.entries(schema).map(([name, info]) => (
           <div key={name} style={{ ...S.card, borderColor: info.isFact ? C.brand + "44" : C.border }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
               <span style={{ fontSize: 15, fontWeight: 700, color: C.text }}>{name}</span>
-              <span style={S.badge(info.isFact ? C.brand : C.purple)}>{info.isFact ? "FACT" : "DIMENSION"}</span>
+              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                {!info.aiAnalyzed && (
+                  <span style={{ ...S.badge(C.amber), fontSize: 9, animation: "pulse 1.5s infinite" }}>⏳ Analyzing…</span>
+                )}
+                <span style={S.badge(info.isFact ? C.brand : C.purple)}>{info.isFact ? "FACT" : "DIMENSION"}</span>
+              </div>
             </div>
+            {info.aiNotes?.description && (
+              <div style={{ fontSize: 11, color: C.textSec, marginBottom: 6, fontStyle: "italic" }}>{info.aiNotes.description}</div>
+            )}
             <div style={{ fontSize: 12, color: C.textMuted, marginBottom: 10 }}>{info.rowCount} rows</div>
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead><tr>
@@ -932,6 +945,11 @@ function SchemaView({ tables, schema, setSchema, relationships, setRelationships
                       style={{ ...S.select, padding: "2px 8px", fontSize: 10, background: ROLE_COLORS[col.role] + "12", color: ROLE_COLORS[col.role], border: `1px solid ${ROLE_COLORS[col.role]}30`, borderRadius: 20, fontWeight: 600 }}>
                       {ROLE_OPTIONS.map(r => <option key={r} value={r}>{r.toUpperCase()}</option>)}
                     </select>
+                    {col.aiSuggestion?.reasoning && col.aiSuggestion.suggested_role !== col.role && (
+                      <div title={col.aiSuggestion.reasoning} style={{ fontSize: 9, color: C.amber, cursor: "help", marginTop: 2 }}>
+                        AI: {col.aiSuggestion.suggested_role} ⓘ
+                      </div>
+                    )}
                   </td>
                   <td style={{ ...S.td, color: C.textMuted, fontSize: 11 }}>{col.uniqueCount}</td>
                 </tr>
@@ -1530,9 +1548,12 @@ function apiToSchema(schemaList) {
         name: c.column_name,
         role: c.column_role,
         uniqueCount: c.unique_count ?? 0,
+        aiSuggestion: c.ai_suggestion ?? null,
       })),
       isFact: sr.columns.some(c => c.column_role === "measure"),
       rowCount: sr.dataset.row_count,
+      aiAnalyzed: sr.dataset.ai_analyzed,
+      aiNotes: sr.dataset.ai_notes ?? null,
     };
   }
   return schema;
@@ -1566,6 +1587,176 @@ function apiBaselineToRows(bl) {
     (bl.columns ?? []).forEach((col, i) => { obj[col] = row[i]; });
     return obj;
   });
+}
+
+// ─── UPLOAD MODAL ────────────────────────────────────────────────
+function UploadModal({ isOpen, onClose, onUploaded, schemaList }) {
+  const [queue, setQueue] = useState([]); // [{id, file, status, error, datasetIds}]
+  const [dragging, setDragging] = useState(false);
+  const [deletingId, setDeletingId] = useState(null); // dataset id pending confirm
+  const inputRef = useRef(null);
+  const uploadingRef = useRef(false);
+
+  // Process upload queue sequentially
+  useEffect(() => {
+    async function processQueue() {
+      if (uploadingRef.current) return;
+      const next = queue.find(q => q.status === "queued");
+      if (!next) return;
+      uploadingRef.current = true;
+      setQueue(p => p.map(q => q.id === next.id ? { ...q, status: "uploading" } : q));
+      try {
+        const result = await uploadFile(next.file);
+        const ids = (result ?? []).map(ds => ds.id);
+        setQueue(p => p.map(q => q.id === next.id ? { ...q, status: "done", datasetIds: ids } : q));
+        onUploaded();
+      } catch (e) {
+        setQueue(p => p.map(q => q.id === next.id ? { ...q, status: "error", error: e.message ?? "Upload failed" } : q));
+      }
+      uploadingRef.current = false;
+    }
+    processQueue();
+  }, [queue]);
+
+  function addFiles(files) {
+    const newItems = Array.from(files).map(file => ({
+      id: `${Date.now()}-${Math.random()}`,
+      file,
+      status: "queued",
+      error: null,
+      datasetIds: [],
+    }));
+    setQueue(p => [...p, ...newItems]);
+  }
+
+  async function handleDelete(dsId) {
+    try {
+      await deleteDataset(dsId);
+      onUploaded();
+    } catch (e) {
+      console.error("Delete failed", e);
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
+  if (!isOpen) return null;
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <div style={{ background: C.white, borderRadius: 16, width: 520, maxHeight: "85vh", display: "flex", flexDirection: "column", boxShadow: "0 20px 60px rgba(0,0,0,0.2)", overflow: "hidden" }}>
+
+        {/* Header */}
+        <div style={{ padding: "16px 20px", borderBottom: `1px solid ${C.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
+          <span style={{ fontSize: 15, fontWeight: 700, color: C.text }}>Upload Data Files</span>
+          <span onClick={onClose} style={{ cursor: "pointer", color: C.textMuted, fontSize: 20, lineHeight: 1, padding: "0 4px" }}>×</span>
+        </div>
+
+        <div style={{ overflow: "auto", flex: 1, padding: 20, display: "flex", flexDirection: "column", gap: 16 }}>
+
+          {/* Loaded datasets overview */}
+          {schemaList.length > 0 && (
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 8 }}>Loaded Datasets</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                {schemaList.map(sr => {
+                  const isDeleting = deletingId === sr.dataset.id;
+                  const analyzed = sr.dataset.ai_analyzed;
+                  return (
+                    <div key={sr.dataset.id} style={{
+                      display: "flex", alignItems: "center", gap: 10,
+                      padding: "9px 12px", borderRadius: 8,
+                      background: isDeleting ? "#fff0f0" : C.bg,
+                      border: `1px solid ${isDeleting ? C.red + "44" : C.border}`,
+                      fontSize: 12,
+                    }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <span style={{ fontWeight: 600, color: C.text }}>{sr.dataset.source_filename ?? sr.dataset.name}</span>
+                        <span style={{ color: C.textMuted, marginLeft: 8 }}>{sr.dataset.row_count.toLocaleString()} rows</span>
+                      </div>
+                      <span style={{ ...S.badge(analyzed ? C.green : C.amber), fontSize: 9 }}>
+                        {analyzed ? "✓ Analyzed" : "⏳ Analyzing…"}
+                      </span>
+                      {isDeleting ? (
+                        <button onClick={() => handleDelete(sr.dataset.id)} style={{ ...S.btn("danger", true), fontSize: 11, padding: "3px 10px" }}>Confirm</button>
+                      ) : (
+                        <span onClick={() => setDeletingId(sr.dataset.id)} title="Delete dataset" style={{ cursor: "pointer", color: C.textMuted, fontSize: 15, padding: "2px 4px" }}>🗑</span>
+                      )}
+                      {isDeleting && (
+                        <span onClick={() => setDeletingId(null)} style={{ cursor: "pointer", color: C.textMuted, fontSize: 12 }}>Cancel</span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Drop zone */}
+          <div
+            onDragOver={e => { e.preventDefault(); setDragging(true); }}
+            onDragLeave={() => setDragging(false)}
+            onDrop={e => { e.preventDefault(); setDragging(false); addFiles(e.dataTransfer.files); }}
+            onClick={() => inputRef.current?.click()}
+            style={{
+              border: `2px dashed ${dragging ? C.brand : C.border}`,
+              borderRadius: 12, padding: "32px 20px", textAlign: "center",
+              cursor: "pointer", background: dragging ? C.brandLight : C.bg,
+              transition: "all .15s", flexShrink: 0,
+            }}
+          >
+            <input ref={inputRef} type="file" multiple accept=".xlsx,.xls,.csv,.tsv"
+              style={{ display: "none" }} onChange={e => addFiles(e.target.files)} />
+            <div style={{ fontSize: 24, marginBottom: 8 }}>📂</div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: C.text, marginBottom: 4 }}>Drop files here or click to browse</div>
+            <div style={{ fontSize: 11, color: C.textMuted }}>.xlsx · .xls · .csv · .tsv · multiple files supported</div>
+          </div>
+
+          {/* Upload queue */}
+          {queue.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 4 }}>Upload Queue</div>
+              {queue.map(item => {
+                const analyzing = item.status === "done" && item.datasetIds.some(id => {
+                  const sr = schemaList.find(s => s.dataset.id === id);
+                  return sr && !sr.dataset.ai_analyzed;
+                });
+                const fullyDone = item.status === "done" && !analyzing;
+                return (
+                  <div key={item.id} style={{
+                    display: "flex", alignItems: "center", gap: 10,
+                    padding: "8px 12px", borderRadius: 8,
+                    background: item.status === "error" ? "#fff0f0" : C.bg,
+                    border: `1px solid ${item.status === "error" ? C.red + "33" : C.border}`,
+                    fontSize: 12,
+                  }}>
+                    <div style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 500, color: C.text }}>
+                      {item.file.name}
+                    </div>
+                    {item.status === "queued" && <span style={{ color: C.textMuted }}>Queued…</span>}
+                    {item.status === "uploading" && <span style={{ color: C.brand, animation: "pulse 1s infinite" }}>Uploading…</span>}
+                    {fullyDone && <span style={{ color: C.green }}>✓ Done</span>}
+                    {analyzing && <span style={{ color: C.amber, animation: "pulse 1.5s infinite" }}>✓ Uploaded · AI analyzing…</span>}
+                    {item.status === "error" && (
+                      <span style={{ color: C.red }} title={item.error}>✗ {item.error?.slice(0, 40)}</span>
+                    )}
+                    <span onClick={() => setQueue(p => p.filter(q => q.id !== item.id && item.status !== "uploading"))}
+                      style={{ cursor: item.status === "uploading" ? "not-allowed" : "pointer", color: C.textMuted, opacity: item.status === "uploading" ? 0.3 : 1, fontSize: 14 }}>×</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div style={{ padding: "12px 20px", borderTop: `1px solid ${C.border}`, display: "flex", justifyContent: "flex-end", flexShrink: 0 }}>
+          <button onClick={onClose} style={S.btn("secondary", true)}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // ─── UPLOAD SCREEN ───────────────────────────────────────────────
@@ -1641,12 +1832,17 @@ export default function App() {
   const queryClient = useQueryClient();
   const [tab, setTab] = useState("schema");
   const [scenarios, setScenarios] = useState([]);
+  const [uploadOpen, setUploadOpen] = useState(false);
 
   // ── Load datasets from API ──────────────────────────────────────
   const { data: schemaList = [], isLoading } = useQuery({
     queryKey: ["datasets"],
     queryFn: getDatasets,
     staleTime: 30_000,
+    refetchInterval: (query) => {
+      const list = query.state.data ?? [];
+      return list.some(sr => !sr.dataset.ai_analyzed) ? 3_000 : false;
+    },
   });
 
   // ── Local schema / relationships state (initialised from API) ──
@@ -1754,6 +1950,7 @@ export default function App() {
         select option { background: ${C.white}; color: ${C.text}; }
         * { box-sizing: border-box; }
         input:focus, select:focus { border-color: ${C.brand} !important; }
+        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.45} }
       `}</style>
 
       <div style={{ padding: "0 24px", height: 56, borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "space-between", background: C.white, flexShrink: 0 }}>
@@ -1788,12 +1985,18 @@ export default function App() {
 
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
         <div style={{ flex: 1, overflow: "auto", padding: 24 }}>
-          {tab === "schema" && <SchemaView tables={{}} schema={schema} setSchema={handleSetSchema} relationships={relationships} setRelationships={handleSetRelationships} />}
+          {tab === "schema" && <SchemaView tables={{}} schema={schema} setSchema={handleSetSchema} relationships={relationships} setRelationships={handleSetRelationships} onOpenUpload={() => setUploadOpen(true)} />}
           {tab === "actuals" && <ActualsView baseline={baseline} />}
           {tab === "scenarios" && <ScenariosView baseline={baseline} scenarios={scenarios} setScenarios={setScenarios} />}
         </div>
         <ChatPanel baseline={baseline} scenarios={scenarios} setScenarios={setScenarios} setActiveTab={setTab} datasetId={factDataset?.dataset.id} />
       </div>
+      <UploadModal
+        isOpen={uploadOpen}
+        onClose={() => setUploadOpen(false)}
+        onUploaded={() => queryClient.invalidateQueries({ queryKey: ["datasets"] })}
+        schemaList={schemaList}
+      />
     </div>
   );
 }
