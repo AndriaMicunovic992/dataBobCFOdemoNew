@@ -20,10 +20,18 @@ backend/uploads/*
 # Remove this line if you want to commit migrations
 # backend/alembic/versions/*.py
 
+# Node / Frontend
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/.cache/
+
 # IDE
 .idea/
 .vscode/
 *.swp
+*.swo
 
 # OS
 .DS_Store
@@ -31,3 +39,9 @@ Thumbs.db
 
 # Docker volumes
 postgres_data/
+
+# General dist / cache
+dist/
+*.pyc
+.mypy_cache/
+.ruff_cache/

@@ -193,27 +193,46 @@ function Spinner() {
 
 // ── UploadScreen ──────────────────────────────────────────────────────────────
 
+const fmtBytes = (b) => {
+  if (b < 1024) return `${b} B`
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`
+  return `${(b / 1024 / 1024).toFixed(1)} MB`
+}
+
+const UPLOAD_STEPS = ['Uploading file…', 'Parsing data…', 'Detecting schema…', 'Saving to database…']
+
 function UploadScreen({ onUpload }) {
-  const [dragging, setDragging] = useState(false)
-  const [uploading, setUploading] = useState(false)
-  const [progress, setProgress]  = useState('')
-  const [error, setError]        = useState(null)
+  const [dragging, setDragging]     = useState(false)
+  const [uploading, setUploading]   = useState(false)
+  const [step, setStep]             = useState(0)
+  const [fileInfo, setFileInfo]     = useState(null)
+  const [error, setError]           = useState(null)
   const inputRef = useRef(null)
+  const stepTimerRef = useRef(null)
 
   const handleFile = async (file) => {
     if (!file) return
     setUploading(true)
     setError(null)
-    setProgress('Uploading file…')
+    setStep(0)
+    setFileInfo({ name: file.name, size: file.size })
+
+    // Animate through steps while the real request is in-flight
+    let s = 0
+    stepTimerRef.current = setInterval(() => {
+      s = Math.min(s + 1, UPLOAD_STEPS.length - 1)
+      setStep(s)
+    }, 1200)
+
     try {
       const datasets = await api.uploadFile(file)
-      setProgress('Processing schema…')
+      clearInterval(stepTimerRef.current)
       onUpload(datasets)
     } catch (e) {
+      clearInterval(stepTimerRef.current)
       setError(e.message)
     } finally {
       setUploading(false)
-      setProgress('')
     }
   }
 
@@ -254,11 +273,29 @@ function UploadScreen({ onUpload }) {
 
         {uploading ? (
           <div>
-            <div style={{ color: C.primary, fontWeight: 700, fontSize: 16, marginBottom: 8 }}>
-              {progress}
+            {fileInfo && (
+              <div style={{ fontSize: 13, color: C.text2, marginBottom: 10 }}>
+                <strong style={{ color: C.text }}>{fileInfo.name}</strong>
+                {' '}({fmtBytes(fileInfo.size)})
+              </div>
+            )}
+            <div style={{ color: C.primary, fontWeight: 700, fontSize: 15, marginBottom: 12 }}>
+              {UPLOAD_STEPS[step]}
             </div>
-            <div style={{ color: C.text2, fontSize: 13 }}>
-              Parsing columns and detecting schema…
+            {/* Progress bar */}
+            <div style={{ height: 4, background: C.border, borderRadius: 2, overflow: 'hidden', marginBottom: 10 }}>
+              <div style={{
+                height: '100%', borderRadius: 2, background: C.primary,
+                width: `${((step + 1) / UPLOAD_STEPS.length) * 100}%`,
+                transition: 'width .6s ease',
+              }} />
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: C.text2 }}>
+              {UPLOAD_STEPS.map((s, i) => (
+                <span key={i} style={{ color: i <= step ? C.primary : C.text2, fontWeight: i === step ? 700 : 400 }}>
+                  {i + 1}
+                </span>
+              ))}
             </div>
           </div>
         ) : (
@@ -297,7 +334,7 @@ function UploadScreen({ onUpload }) {
 
 // ── SchemaView ────────────────────────────────────────────────────────────────
 
-function SchemaView({ schema, allSchemas, onRefresh }) {
+function SchemaView({ schema, allSchemas, onRefresh, onDeleteDataset }) {
   const { dataset, columns, relationships } = schema
   const [saving, setSaving] = useState({})
   const [showAddRel, setShowAddRel] = useState(false)
@@ -339,12 +376,17 @@ function SchemaView({ schema, allSchemas, onRefresh }) {
   return (
     <div style={{ padding: '24px 28px' }}>
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 24 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 24, flexWrap: 'wrap' }}>
         <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: C.text }}>
           Schema — {dataset.name}
         </h2>
         <Badge>{(dataset.row_count ?? 0).toLocaleString()} rows</Badge>
         {dataset.ai_analyzed && <Badge color={C.success}>AI analysed</Badge>}
+        <div style={{ marginLeft: 'auto' }}>
+          <Btn small variant="danger" onClick={() => onDeleteDataset?.(dataset.id)}>
+            🗑 Delete dataset
+          </Btn>
+        </div>
       </div>
 
       {/* Column table */}
@@ -1246,12 +1288,30 @@ function ChatPanel({ schema, isOpen, onClose, onRuleCreated }) {
 
 export default function App() {
   const qc = useQueryClient()
-  const [activeDatasetId, setActiveDatasetId] = useState(null)
-  const [view, setView]                       = useState('schema')
+
+  // Persist active dataset + last tab across page reloads
+  const [activeDatasetId, _setActiveDatasetId] = useState(
+    () => localStorage.getItem('databobiq_dataset_id') ?? null
+  )
+  const [view, setView] = useState(
+    () => localStorage.getItem('databobiq_view') ?? 'schema'
+  )
+  const setActiveDatasetId = (id) => {
+    _setActiveDatasetId(id)
+    if (id) localStorage.setItem('databobiq_dataset_id', id)
+  }
+  const setViewPersist = (v) => {
+    setView(v)
+    localStorage.setItem('databobiq_view', v)
+  }
+
   const [chatOpen, setChatOpen]               = useState(false)
-  const [baselines, setBaselines]             = useState({})      // datasetId → baseline
+  const [baselines, setBaselines]             = useState({})
   const [baselineLoading, setBaselineLoading] = useState({})
   const [scenarios, setScenarios]             = useState([])
+  const [healthError, setHealthError]         = useState(false)
+  const [uploadingNew, setUploadingNew]       = useState(false)
+  const [uploadNewError, setUploadNewError]   = useState(null)
 
   const { data: allSchemas = [], isLoading: schemasLoading, refetch: refetchSchemas } = useQuery({
     queryKey: ['datasets'],
@@ -1259,11 +1319,29 @@ export default function App() {
     staleTime: 30_000,
   })
 
-  // Auto-select first dataset on load
+  // Health-check poll — shows banner if backend is unreachable
   useEffect(() => {
-    if (allSchemas.length > 0 && !activeDatasetId) {
-      setActiveDatasetId(allSchemas[0].dataset.id)
+    let ok = true
+    const poll = async () => {
+      try {
+        const res = await fetch('/api/health')
+        setHealthError(!res.ok)
+      } catch {
+        setHealthError(true)
+      }
     }
+    poll()
+    const iv = setInterval(poll, 15_000)
+    return () => { clearInterval(iv); ok = false }
+  }, [])
+
+  // Auto-select first dataset when list loads (respects localStorage preference)
+  useEffect(() => {
+    if (allSchemas.length === 0) return
+    const saved = localStorage.getItem('databobiq_dataset_id')
+    const exists = allSchemas.some((s) => s.dataset.id === saved)
+    if (!exists) setActiveDatasetId(allSchemas[0].dataset.id)
+    else if (!activeDatasetId) setActiveDatasetId(allSchemas[0].dataset.id)
   }, [allSchemas])
 
   // Load scenarios whenever active dataset changes
@@ -1291,17 +1369,22 @@ export default function App() {
   }, [])
 
   const switchToView = (tab) => {
-    setView(tab)
+    setViewPersist(tab)
     if (tab === 'actuals' && activeSchema && !baselines[activeDatasetId]) {
       loadBaseline(activeSchema)
     }
   }
 
+  // Called by UploadScreen after a successful first upload
   const handleUpload = async () => {
     const { data } = await refetchSchemas()
-    if (data?.length > 0) setActiveDatasetId(data[0].dataset.id)
+    if (data?.length > 0) {
+      setActiveDatasetId(data[0].dataset.id)
+      setViewPersist('schema')   // auto-navigate to schema
+    }
   }
 
+  // Header "+ Upload" button — inline upload without leaving the app
   const handleUploadNew = () => {
     const inp = document.createElement('input')
     inp.type = 'file'
@@ -1309,13 +1392,44 @@ export default function App() {
     inp.onchange = async (e) => {
       const file = e.target.files?.[0]
       if (!file) return
-      try { await api.uploadFile(file); refetchSchemas() }
-      catch (err) { alert(err.message) }
+      setUploadingNew(true)
+      setUploadNewError(null)
+      try {
+        await api.uploadFile(file)
+        const { data } = await refetchSchemas()
+        // Switch to the freshly uploaded dataset
+        if (data?.length > 0) {
+          setActiveDatasetId(data[0].dataset.id)
+          setViewPersist('schema')
+        }
+      } catch (err) {
+        setUploadNewError(err.message)
+      } finally {
+        setUploadingNew(false)
+      }
     }
     inp.click()
   }
 
-  // When Claude creates a scenario rule, add it to the first scenario (or note it)
+  const handleDeleteDataset = async (datasetId) => {
+    const schema = allSchemas.find((s) => s.dataset.id === datasetId)
+    if (!schema) return
+    if (!confirm(`Delete "${schema.dataset.name}"?\n\nThis will permanently remove the dataset and all its data.`)) return
+    try {
+      await api.deleteDataset(datasetId)
+      const { data: remaining } = await refetchSchemas()
+      // Switch away from deleted dataset
+      if (remaining?.length > 0) {
+        setActiveDatasetId(remaining[0].dataset.id)
+        setViewPersist('schema')
+      } else {
+        setActiveDatasetId(null)
+        localStorage.removeItem('databobiq_dataset_id')
+      }
+    } catch (e) { alert('Delete failed: ' + e.message) }
+  }
+
+  // When Claude creates a scenario rule, add it to the first scenario
   const handleRuleCreated = useCallback((rule) => {
     if (scenarios.length === 0) return
     const sc = scenarios[0]
@@ -1344,6 +1458,33 @@ export default function App() {
       paddingRight: chatOpen ? 400 : 0,
       transition: 'padding-right .25s',
     }}>
+      {/* ── Health-check banner ── */}
+      {healthError && (
+        <div style={{
+          background: '#fef3c7', borderBottom: `1px solid ${C.warning}`,
+          padding: '8px 20px', fontSize: 13, color: '#92400e',
+          display: 'flex', alignItems: 'center', gap: 8,
+        }}>
+          ⚠️ Cannot reach the backend — check that <code>make dev</code> is running.
+          <button
+            onClick={() => fetch('/api/health').then((r) => setHealthError(!r.ok)).catch(() => setHealthError(true))}
+            style={{ marginLeft: 8, background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontWeight: 700, color: '#92400e', textDecoration: 'underline' }}
+          >Retry</button>
+        </div>
+      )}
+
+      {/* ── Upload-new error banner ── */}
+      {uploadNewError && (
+        <div style={{
+          background: '#fee2e2', borderBottom: `1px solid ${C.error}`,
+          padding: '8px 20px', fontSize: 13, color: C.error,
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        }}>
+          <span>⚠️ Upload failed: {uploadNewError}</span>
+          <button onClick={() => setUploadNewError(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.error, fontSize: 16 }}>×</button>
+        </div>
+      )}
+
       {/* ── Header ── */}
       <div style={{
         background: C.surface, borderBottom: `1px solid ${C.border}`,
@@ -1358,25 +1499,44 @@ export default function App() {
 
         {/* Dataset selector */}
         {allSchemas.length > 0 && (
-          <select
-            value={activeDatasetId ?? ''}
-            onChange={(e) => {
-              setActiveDatasetId(e.target.value)
-              setView('schema')
-            }}
-            style={{
-              border: `1px solid ${C.border}`, borderRadius: 8,
-              padding: '5px 10px', fontSize: 13, background: C.surface,
-              color: C.text, maxWidth: 200, fontFamily: 'inherit', fontWeight: 600,
-            }}
-          >
-            {allSchemas.map((s) => (
-              <option key={s.dataset.id} value={s.dataset.id}>{s.dataset.name}</option>
-            ))}
-          </select>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <select
+              value={activeDatasetId ?? ''}
+              onChange={(e) => {
+                setActiveDatasetId(e.target.value)
+                setViewPersist('schema')
+              }}
+              style={{
+                border: `1px solid ${C.border}`, borderRadius: 8,
+                padding: '5px 10px', fontSize: 13, background: C.surface,
+                color: C.text, maxWidth: 220, fontFamily: 'inherit', fontWeight: 600,
+              }}
+            >
+              {allSchemas.map((s) => (
+                <option key={s.dataset.id} value={s.dataset.id}>
+                  {s.dataset.name}
+                  {s.dataset.row_count != null ? ` (${s.dataset.row_count.toLocaleString()} rows)` : ''}
+                </option>
+              ))}
+            </select>
+            {/* Delete active dataset */}
+            {activeDatasetId && (
+              <button
+                onClick={() => handleDeleteDataset(activeDatasetId)}
+                title="Delete this dataset"
+                style={{
+                  background: 'none', border: `1px solid ${C.border}`, borderRadius: 6,
+                  cursor: 'pointer', color: C.text2, fontSize: 13, padding: '4px 7px',
+                  lineHeight: 1,
+                }}
+              >🗑</button>
+            )}
+          </div>
         )}
 
-        <Btn small variant="ghost" onClick={handleUploadNew}>+ Upload</Btn>
+        <Btn small variant="ghost" onClick={handleUploadNew} disabled={uploadingNew}>
+          {uploadingNew ? '⏳ Uploading…' : '+ Upload'}
+        </Btn>
 
         {/* Nav tabs */}
         <div style={{ display: 'flex', gap: 2, marginLeft: 8 }}>
@@ -1422,6 +1582,7 @@ export default function App() {
               schema={activeSchema}
               allSchemas={allSchemas}
               onRefresh={() => refetchSchemas()}
+              onDeleteDataset={handleDeleteDataset}
             />
           )}
           {view === 'actuals' && (
