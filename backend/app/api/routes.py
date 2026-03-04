@@ -245,11 +245,19 @@ async def _run_agent_and_persist(dataset_id: str) -> None:
             logger.warning("_run_agent_and_persist: dataset %s not found", dataset_id)
             return
 
+        # Load all active datasets so the agent can suggest cross-table relationships
+        all_ds_result = await db.execute(
+            select(Dataset)
+            .where(Dataset.status != "deleted")
+            .options(selectinload(Dataset.columns))
+        )
+        all_datasets = all_ds_result.scalars().all()
+
         tables_payload = [
             {
-                "name": dataset.name,
-                "filename": dataset.source_filename or "",
-                "row_count": dataset.row_count,
+                "name": ds.name,
+                "filename": ds.source_filename or "",
+                "row_count": ds.row_count,
                 "columns": [
                     {
                         "column_name": c.column_name,
@@ -259,10 +267,11 @@ async def _run_agent_and_persist(dataset_id: str) -> None:
                         "null_count": 0,
                         "sample_values": c.sample_values or [],
                     }
-                    for c in dataset.columns
+                    for c in ds.columns
                 ],
                 "preview_rows": [],
             }
+            for ds in all_datasets
         ]
 
         try:

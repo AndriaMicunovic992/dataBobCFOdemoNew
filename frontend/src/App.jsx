@@ -41,6 +41,7 @@ const ROLE_COLORS = { key: C.amber, measure: C.brand, attribute: C.textMuted, ti
 
 const fmt = n => (n == null || isNaN(n)) ? "" : new Intl.NumberFormat("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
 const fmtS = n => { if (n == null || isNaN(n)) return ""; const a = Math.abs(n); if (a >= 1e6) return (n / 1e6).toFixed(1) + "M"; if (a >= 1e3) return (n / 1e3).toFixed(1) + "K"; return n.toFixed(0); };
+const valColor = v => v > 0 ? C.green : v < 0 ? C.red : C.textMuted;
 
 // ─── STYLES ─────────────────────────────────────────────────────
 const S = {
@@ -168,9 +169,25 @@ function buildBaseline(tables, schema, relationships) {
     const dimCols = schema[dimName]?.columns.filter(c => c.role === "attribute" || c.role === "time") || [];
     lk[dimName] = { map, factKeyCol, dimCols };
   }
+  // Time columns in the fact table (for auto-deriving calendar fields)
+  const timeCols = (schema[fn]?.columns || []).filter(c => c.role === "time").map(c => c.name);
+  const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
   return tables[fn].data.map(row => {
     const e = { ...row };
-    if (row.period) { e._year = row.period.slice(0, 4); e._month = row.period.slice(5, 7); e._period = row.period; }
+    // Derive calendar fields from explicit 'period' column or any time-role column
+    const rawDate = row.period || timeCols.map(c => row[c]).find(v => v != null) || null;
+    if (rawDate) {
+      const s = String(rawDate);
+      if (/^\d{4}-\d{2}/.test(s)) {
+        e._year = s.slice(0, 4);
+        e._month = s.slice(5, 7);
+        e._month_year = s.slice(0, 7);
+        e._period = s.slice(0, 7);
+        if (s.length >= 10) e._date = s.slice(0, 10);
+        const mIdx = parseInt(e._month, 10) - 1;
+        if (mIdx >= 0 && mIdx < 12) e._month_name = MONTHS[mIdx];
+      }
+    }
     for (const [, l] of Object.entries(lk)) {
       const dr = l.map[row[l.factKeyCol]];
       if (dr) for (const dc of l.dimCols) e[dc.name] = dr[dc.name];
@@ -446,9 +463,9 @@ function PivotTableView({ data, rowFs, colF, valF, colorFn }) {
               {rowFs.map(f => <td key={f} style={S.td}>{String(r[f] ?? "—")}</td>)}
               {hasCols ? colKeys.map(ck => {
                 const v = r[ck] || 0;
-                return <td key={ck} style={{ ...S.td, ...S.mono, textAlign: "right", color: colorFn ? colorFn(v) : v >= 0 ? C.green : C.red }}>{fmt(v)}</td>;
-              }) : <td style={{ ...S.td, ...S.mono, textAlign: "right", color: colorFn ? colorFn(r._total) : r._total >= 0 ? C.green : C.red }}>{fmt(r._total)}</td>}
-              {hasCols && <td style={{ ...S.td, ...S.mono, textAlign: "right", fontWeight: 600, color: colorFn ? colorFn(r._total) : r._total >= 0 ? C.green : C.red }}>{fmt(r._total)}</td>}
+                return <td key={ck} style={{ ...S.td, ...S.mono, textAlign: "right", color: colorFn ? colorFn(v) : valColor(v) }}>{fmt(v)}</td>;
+              }) : <td style={{ ...S.td, ...S.mono, textAlign: "right", color: colorFn ? colorFn(r._total) : valColor(r._total) }}>{fmt(r._total)}</td>}
+              {hasCols && <td style={{ ...S.td, ...S.mono, textAlign: "right", fontWeight: 600, color: colorFn ? colorFn(r._total) : valColor(r._total) }}>{fmt(r._total)}</td>}
             </tr>
           ))}
         </tbody>
@@ -780,11 +797,11 @@ function ComparisonTable({ baseline, scenarioOutputs, rowFs, colF, valF, scenari
           {data.slice(0, 120).map((r, i) => (
             <tr key={i} style={{ background: i % 2 === 0 ? "" : C.bg }}>
               {rowFs.map(f => <td key={f} style={S.td}>{String(r[f] ?? "—")}</td>)}
-              <td style={{ ...S.td, ...S.mono, textAlign: "right", color: r._total >= 0 ? C.green : C.red }}>{fmt(r._total)}</td>
+              <td style={{ ...S.td, ...S.mono, textAlign: "right", color: valColor(r._total) }}>{fmt(r._total)}</td>
               {scenarios.map(sc => <td key={sc.id} style={{ ...S.td, ...S.mono, textAlign: "right", color: sc.color }}>{fmt(r["sc_" + sc.name])}</td>)}
               {scenarios.map(sc => {
                 const v = r["var_" + sc.name];
-                return <td key={"v" + sc.id} style={{ ...S.td, ...S.mono, textAlign: "right", color: v >= 0 ? C.green : C.red }}>{v >= 0 ? "+" : ""}{fmt(v)}</td>;
+                return <td key={"v" + sc.id} style={{ ...S.td, ...S.mono, textAlign: "right", color: valColor(v) }}>{v > 0 ? "+" : ""}{fmt(v)}</td>;
               })}
             </tr>
           ))}
@@ -795,7 +812,7 @@ function ComparisonTable({ baseline, scenarioOutputs, rowFs, colF, valF, scenari
           {scenarios.map(sc => <td key={sc.id} style={{ ...S.th, ...S.mono, textAlign: "right", fontWeight: 700, color: sc.color, borderTop: `2px solid ${C.border}` }}>{fmt(data.reduce((s, r) => s + (r["sc_" + sc.name] || 0), 0))}</td>)}
           {scenarios.map(sc => {
             const v = data.reduce((s, r) => s + (r["var_" + sc.name] || 0), 0);
-            return <td key={"v" + sc.id} style={{ ...S.th, ...S.mono, textAlign: "right", fontWeight: 700, color: v >= 0 ? C.green : C.red, borderTop: `2px solid ${C.border}` }}>{v >= 0 ? "+" : ""}{fmt(v)}</td>;
+            return <td key={"v" + sc.id} style={{ ...S.th, ...S.mono, textAlign: "right", fontWeight: 700, color: valColor(v), borderTop: `2px solid ${C.border}` }}>{v > 0 ? "+" : ""}{fmt(v)}</td>;
           })}
         </tr></tfoot>
       </table>
@@ -809,7 +826,25 @@ function ComparisonTable({ baseline, scenarioOutputs, rowFs, colF, valF, scenari
 function SchemaView({ tables, schema, setSchema, relationships, setRelationships, onOpenUpload }) {
   const [addRelOpen, setAddRelOpen] = useState(false);
   const [newRel, setNewRel] = useState({ from: "", to: "", fromCol: "", toCol: "" });
+  const [dismissedSuggestions, setDismissedSuggestions] = useState(new Set());
   const tableNames = Object.keys(schema);
+
+  // Collect AI-suggested relationships from all tables' aiNotes (deduped)
+  const aiSuggestedRels = useMemo(() => {
+    const seen = new Set();
+    return Object.values(schema)
+      .flatMap(s => s.aiNotes?.relationships ?? [])
+      .filter(r => {
+        const key = `${r.source_table}|${r.source_column}|${r.target_table}|${r.target_column}`;
+        if (seen.has(key) || dismissedSuggestions.has(key)) return false;
+        seen.add(key);
+        return schema[r.source_table] && schema[r.target_table];
+      })
+      .filter(r => !relationships.some(
+        ex => (ex.from === r.source_table && ex.fromCol === r.source_column && ex.to === r.target_table && ex.toCol === r.target_column) ||
+              (ex.from === r.target_table && ex.fromCol === r.target_column && ex.to === r.source_table && ex.toCol === r.source_column)
+      ));
+  }, [schema, relationships, dismissedSuggestions]);
 
   function changeRole(tn, cn, nr) {
     setSchema(p => {
@@ -836,6 +871,24 @@ function SchemaView({ tables, schema, setSchema, relationships, setRelationships
   }
 
   function removeRel(id) { setRelationships(p => p.filter(r => r.id !== id)); }
+
+  function acceptSuggestion(sug) {
+    const from = sug.source_table, fromCol = sug.source_column, to = sug.target_table, toCol = sug.target_column;
+    const v1 = new Set((tables[from]?.data ?? []).map(r => r[fromCol]).filter(v => v != null).map(String));
+    const v2 = new Set((tables[to]?.data ?? []).map(r => r[toCol]).filter(v => v != null).map(String));
+    const ov = [...v1].filter(v => v2.has(v)).length;
+    setRelationships(p => [...p, {
+      id: `${from}-${to}-${fromCol}-${Date.now()}`,
+      from, fromCol, to, toCol,
+      coverage: Math.round(ov / Math.min(v1.size || 1, v2.size || 1) * 100),
+      overlapCount: ov,
+    }]);
+  }
+
+  function dismissSuggestion(sug) {
+    const key = `${sug.source_table}|${sug.source_column}|${sug.target_table}|${sug.target_column}`;
+    setDismissedSuggestions(p => new Set([...p, key]));
+  }
 
   function updateRelCol(id, side, col) {
     setRelationships(p => p.map(r => {
@@ -903,6 +956,28 @@ function SchemaView({ tables, schema, setSchema, relationships, setRelationships
           </div>
         )}
 
+        {aiSuggestedRels.length > 0 && (
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 11, color: C.amber, fontWeight: 600, marginBottom: 6 }}>⚡ AI Suggestions</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {aiSuggestedRels.map((sug, i) => (
+                <div key={i} style={{ background: C.amberBg, borderRadius: 8, padding: "8px 12px", border: `1px solid ${C.amber}30`, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <span style={{ ...S.badge(C.brand), fontSize: 10 }}>{sug.source_table}</span>
+                  <span style={{ ...S.mono, fontSize: 11, color: C.text }}>{sug.source_column}</span>
+                  <span style={{ color: C.textMuted }}>→</span>
+                  <span style={{ ...S.badge(C.purple), fontSize: 10 }}>{sug.target_table}</span>
+                  <span style={{ ...S.mono, fontSize: 11, color: C.text }}>{sug.target_column}</span>
+                  <span style={{ ...S.badge(sug.confidence === "high" ? C.green : sug.confidence === "medium" ? C.amber : C.textMuted), fontSize: 9 }}>{sug.confidence}</span>
+                  {sug.reasoning && <span title={sug.reasoning} style={{ fontSize: 10, color: C.textMuted, cursor: "help" }}>ⓘ</span>}
+                  <div style={{ flex: 1 }} />
+                  <button onClick={() => acceptSuggestion(sug)} style={{ ...S.btn("primary", true), fontSize: 10, padding: "2px 10px" }}>Accept</button>
+                  <button onClick={() => dismissSuggestion(sug)} style={{ ...S.btn("ghost", true), fontSize: 10, padding: "2px 8px" }}>✕</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           {relationships.map(rel => (
             <div key={rel.id} style={{ background: C.bg, borderRadius: 8, padding: "10px 14px", border: `1px solid ${C.border}`, display: "flex", alignItems: "center", gap: 10 }}>
@@ -925,9 +1000,9 @@ function SchemaView({ tables, schema, setSchema, relationships, setRelationships
       </div>
 
       {/* Tables */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 14 }}>
+      <div style={{ display: "flex", gap: 14, overflowX: "auto", paddingBottom: 8, alignItems: "flex-start" }}>
         {Object.entries(schema).map(([name, info]) => (
-          <div key={name} style={{ ...S.card, borderColor: info.isFact ? C.brand + "44" : C.border, minWidth: 0, overflow: "hidden" }}>
+          <div key={name} style={{ ...S.card, borderColor: info.isFact ? C.brand + "44" : C.border, flex: "0 0 320px", width: 320 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
               <span style={{ fontSize: 15, fontWeight: 700, color: C.text }}>{name}</span>
               <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
@@ -941,16 +1016,15 @@ function SchemaView({ tables, schema, setSchema, relationships, setRelationships
               <div style={{ fontSize: 11, color: C.textSec, marginBottom: 6, fontStyle: "italic" }}>{info.aiNotes.description}</div>
             )}
             <div style={{ fontSize: 12, color: C.textMuted, marginBottom: 10 }}>{info.rowCount} rows</div>
-            <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead><tr>
-                <th style={S.th}>Column</th>
-                <th style={S.th}>Role</th>
-                <th style={S.th}>Unique</th>
+                <th style={{ ...S.th, width: "45%" }}>Column</th>
+                <th style={{ ...S.th, width: "40%" }}>Role</th>
+                <th style={{ ...S.th, width: "15%", textAlign: "right" }}>Uniq</th>
               </tr></thead>
               <tbody>{info.columns.map(col => (
                 <tr key={col.name}>
-                  <td style={{ ...S.td, ...S.mono, fontSize: 11 }}>{col.name}</td>
+                  <td style={{ ...S.td, ...S.mono, fontSize: 11, wordBreak: "break-word", maxWidth: 130 }}>{col.name}</td>
                   <td style={S.td}>
                     <select value={col.role} onChange={e => changeRole(name, col.name, e.target.value)}
                       style={{ ...S.select, padding: "2px 8px", fontSize: 10, background: ROLE_COLORS[col.role] + "12", color: ROLE_COLORS[col.role], border: `1px solid ${ROLE_COLORS[col.role]}30`, borderRadius: 20, fontWeight: 600 }}>
@@ -962,11 +1036,10 @@ function SchemaView({ tables, schema, setSchema, relationships, setRelationships
                       </div>
                     )}
                   </td>
-                  <td style={{ ...S.td, color: C.textMuted, fontSize: 11 }}>{col.uniqueCount}</td>
+                  <td style={{ ...S.td, color: C.textMuted, fontSize: 11, textAlign: "right" }}>{col.uniqueCount}</td>
                 </tr>
               ))}</tbody>
             </table>
-            </div>
           </div>
         ))}
       </div>
@@ -1421,8 +1494,8 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema }) {
                 <tr key={v.name}>
                   <td style={S.td}><span style={{ color: v.color, fontWeight: 600 }}>● {v.name}</span></td>
                   <td style={{ ...S.td, ...S.mono, textAlign: "right" }}>{fmt(v.total)}</td>
-                  <td style={{ ...S.td, ...S.mono, textAlign: "right", color: v.variance >= 0 ? C.green : C.red }}>{v.variance >= 0 ? "+" : ""}{fmt(v.variance)}</td>
-                  <td style={{ ...S.td, textAlign: "right", color: v.pct >= 0 ? C.green : C.red, fontWeight: 600 }}>{v.pct >= 0 ? "+" : ""}{v.pct.toFixed(1)}%</td>
+                  <td style={{ ...S.td, ...S.mono, textAlign: "right", color: valColor(v.variance) }}>{v.variance > 0 ? "+" : ""}{fmt(v.variance)}</td>
+                  <td style={{ ...S.td, textAlign: "right", color: valColor(v.pct), fontWeight: 600 }}>{v.pct > 0 ? "+" : ""}{v.pct.toFixed(1)}%</td>
                 </tr>
               ))}
             </tbody>
