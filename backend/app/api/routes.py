@@ -267,13 +267,21 @@ async def _run_agent_and_persist(dataset_id: str) -> None:
 
         try:
             agent_result = await asyncio.wait_for(
-                schema_agent.analyze_schema(tables_payload), timeout=15
+                schema_agent.analyze_schema(tables_payload), timeout=90
             )
         except asyncio.TimeoutError:
             logger.warning("Schema agent timed out for dataset %s", dataset_id)
+            dataset.ai_analyzed = True
+            dataset.ai_notes = {"description": "", "table_type": "unknown",
+                                 "warnings": ["AI analysis timed out"]}
+            await db.commit()
             return
         except Exception as exc:
             logger.warning("Schema agent failed for dataset %s: %s", dataset_id, exc)
+            dataset.ai_analyzed = True
+            dataset.ai_notes = {"description": "", "table_type": "unknown",
+                                 "warnings": [f"AI analysis failed: {exc}"]}
+            await db.commit()
             return
 
         agent_tables = {t["name"]: t for t in agent_result.get("tables", [])}
