@@ -110,14 +110,6 @@ export async function deleteScenario(id) {
   return req(`/scenarios/${id}`, { method: 'DELETE' })
 }
 
-/**
- * Server-side scenario computation (for large datasets).
- * Returns baseline/scenario rows + variance + waterfall.
- */
-export async function computeScenario(scenarioId, body) {
-  return req(`/scenarios/${scenarioId}/compute`, { method: 'POST', ...json(body) })
-}
-
 // ── Chat (SSE streaming) ─────────────────────────────────────────────────────
 
 /**
@@ -131,11 +123,6 @@ export async function computeScenario(scenarioId, body) {
  *   {type:'scenario_rule', rule:{...}}
  *   {type:'done'}
  *   {type:'error', message:'...'}
- *
- * @param {string} message
- * @param {string} datasetId
- * @param {Array<{role:string,content:string}>} history
- * @param {AbortSignal} [signal]
  */
 export async function* streamChat(message, datasetId, history = [], signal) {
   const res = await fetch(`${BASE}/chat`, {
