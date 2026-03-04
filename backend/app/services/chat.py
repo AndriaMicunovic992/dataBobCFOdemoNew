@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 _MAX_TOOL_ROUNDS = 3
 
 # Claude model for chat
-_CHAT_MODEL = "claude-sonnet-4-5-20250514"
+_CHAT_MODEL = "claude-sonnet-4-6"
 
 # ---------------------------------------------------------------------------
 # Tool definitions (Anthropic tool-use format)
