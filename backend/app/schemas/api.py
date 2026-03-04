@@ -1,18 +1,16 @@
 """Pydantic request/response schemas for the API."""
 
+from __future__ import annotations
+
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 # ---------------------------------------------------------------------------
-# Dataset
+# Dataset column
 # ---------------------------------------------------------------------------
-
-class DatasetCreate(BaseModel):
-    name: str | None = None
-
 
 class DatasetColumnResponse(BaseModel):
     id: str
@@ -32,6 +30,10 @@ class DatasetColumnUpdate(BaseModel):
     column_role: str | None = None
     display_name: str | None = None
 
+
+# ---------------------------------------------------------------------------
+# Dataset
+# ---------------------------------------------------------------------------
 
 class DatasetResponse(BaseModel):
     id: str
@@ -60,6 +62,11 @@ class DatasetRelationshipCreate(BaseModel):
     target_column: str
 
 
+class DatasetRelationshipUpdate(BaseModel):
+    source_column: str | None = None
+    target_column: str | None = None
+
+
 class DatasetRelationshipResponse(BaseModel):
     id: str
     source_dataset_id: str
@@ -81,6 +88,54 @@ class SchemaResponse(BaseModel):
     dataset: DatasetResponse
     columns: list[DatasetColumnResponse]
     relationships: list[DatasetRelationshipResponse] = []
+
+
+# ---------------------------------------------------------------------------
+# Query
+# ---------------------------------------------------------------------------
+
+class OrderByClause(BaseModel):
+    column: str
+    direction: Literal["asc", "desc"] = "asc"
+
+
+class QueryRequest(BaseModel):
+    """Flexible query against a dynamic dataset table.
+
+    ``filters`` values can be a single value (equality) or a list (IN clause).
+    ``aggregations`` maps column name -> agg function (sum, avg, min, max, count).
+    """
+    columns: list[str] | None = None
+    filters: dict[str, Any] | None = None
+    group_by: list[str] | None = None
+    aggregations: dict[str, str] | None = None
+    order_by: list[OrderByClause] | None = None
+    limit: int = Field(default=1000, le=10_000)
+
+
+class QueryResponse(BaseModel):
+    columns: list[str]
+    data: list[list[Any]]
+    total_rows: int
+
+
+# ---------------------------------------------------------------------------
+# Baseline
+# ---------------------------------------------------------------------------
+
+class RelationshipRef(BaseModel):
+    rel_id: str
+
+
+class BaselineRequest(BaseModel):
+    fact_dataset_id: str
+    relationships: list[RelationshipRef] = []
+
+
+class BaselineResponse(BaseModel):
+    columns: list[str]
+    data: list[list[Any]]
+    row_count: int
 
 
 # ---------------------------------------------------------------------------
@@ -112,25 +167,9 @@ class ScenarioResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
-# ---------------------------------------------------------------------------
-# Query
-# ---------------------------------------------------------------------------
-
-class QueryRequest(BaseModel):
-    dataset_id: str
-    filters: dict[str, Any] | None = None
-    group_by: list[str] | None = None
-    aggregate: dict[str, str] | None = None  # column -> agg function
-    pivot_on: str | None = None
-    pivot_values: str | None = None
-    limit: int = 1000
-
-
-class QueryResponse(BaseModel):
-    dataset_id: str
-    columns: list[str]
-    rows: list[list[Any]]
-    total_rows: int
+class ScenarioComputeRequest(BaseModel):
+    fact_dataset_id: str
+    relationships: list[RelationshipRef] = []
 
 
 # ---------------------------------------------------------------------------
