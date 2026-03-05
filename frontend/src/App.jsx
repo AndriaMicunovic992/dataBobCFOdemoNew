@@ -1679,6 +1679,21 @@ function apiBaselineToRows(bl) {
   return (bl.data ?? []).map(row => {
     const obj = {};
     (bl.columns ?? []).forEach((col, i) => { obj[col] = row[i]; });
+    // Derive _period (YYYY-MM) from calendar's month_year if not already present
+    if (!obj._period) {
+      if (obj.month_year) {
+        obj._period = obj.month_year;
+      } else {
+        // Fall back: scan any value that looks like YYYY-MM-DD or YYYY-MM
+        for (const k of Object.keys(obj)) {
+          const v = obj[k];
+          if (v && typeof v === "string" && /^\d{4}-\d{2}/.test(v)) {
+            obj._period = v.slice(0, 7);
+            break;
+          }
+        }
+      }
+    }
     return obj;
   });
 }

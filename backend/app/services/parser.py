@@ -141,6 +141,8 @@ _DATE_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"^\d{2}/\d{2}/\d{4}$"),           # MM/DD/YYYY
     re.compile(r"^\d{4}/\d{2}/\d{2}$"),           # YYYY/MM/DD
     re.compile(r"^\d{1,2}\.\d{1,2}\.\d{2,4}$"),   # D.M.YY variants
+    re.compile(r"^\d{1,2}\.\d{4}$"),              # M.YYYY  (German period)
+    re.compile(r"^\d{2}-\d{2}-\d{4}$"),           # DD-MM-YYYY
 ]
 _BOOL_VALUES = frozenset({"true", "false", "yes", "no", "1", "0", "ja", "nein"})
 _CURRENCY_RE = re.compile(r"^[€$£¥]?\s*-?\d[\d.,]*\s*[€$£¥]?$")
@@ -280,6 +282,100 @@ def _safe_scalar(v: Any) -> Any:
     if isinstance(v, float) and (v != v):  # NaN
         return None
     return v
+
+
+# ---------------------------------------------------------------------------
+# Date normalization
+# ---------------------------------------------------------------------------
+
+# (detection_regex, strptime_format_or_special_key, output_type)
+# output_type: "iso_date" → YYYY-MM-DD, "iso_month" → YYYY-MM
+_DATE_NORM_RULES: list[tuple[re.Pattern, str | None, str]] = [
+    (re.compile(r"^\d{4}-\d{2}-\d{2}$"),          None,       "iso_date"),   # already ISO
+    (re.compile(r"^\d{4}-\d{2}$"),                 None,       "iso_month"),  # already ISO month
+    (re.compile(r"^\d{2}\.\d{2}\.\d{4}$"),         "%d.%m.%Y", "iso_date"),   # DD.MM.YYYY
+    (re.compile(r"^\d{1,2}\.\d{1,2}\.\d{4}$"),     "%d.%m.%Y", "iso_date"),   # D.M.YYYY
+    (re.compile(r"^\d{1,2}\.\d{4}$"),              "mm.yyyy",  "iso_month"),  # M.YYYY German period
+    (re.compile(r"^\d{4}/\d{2}/\d{2}$"),           "%Y/%m/%d", "iso_date"),   # YYYY/MM/DD
+    (re.compile(r"^\d{2}/\d{2}/\d{4}$"),           "%d/%m/%Y", "iso_date"),   # DD/MM/YYYY
+    (re.compile(r"^\d{2}-\d{2}-\d{4}$"),           "%d-%m-%Y", "iso_date"),   # DD-MM-YYYY
+]
+
+
+def _detect_date_norm_rule(samples: list[str]) -> tuple[str | None, str]:
+    """Return (fmt_key, output_type) for the dominant format among samples."""
+    if not samples:
+        return None, "iso_date"
+    for pattern, fmt, output_type in _DATE_NORM_RULES:
+        hits = sum(1 for s in samples if pattern.match(s))
+        if hits / len(samples) >= 0.7:
+            return fmt, output_type
+    return None, "iso_date"
+
+
+def _apply_date_norm(series: pl.Series, fmt: str, output_type: str) -> pl.Series:
+    """Apply strptime normalization to a Utf8 series; preserve values that fail to parse."""
+    stripped = series.str.strip_chars()
+
+    if fmt == "mm.yyyy":
+        # "01.2024" → "2024-01"  (no day component — parse manually)
+        _re = re.compile(r"^(\d{1,2})\.(\d{4})$")
+        result = pl.Series(
+            series.name,
+            [
+                f"{m.group(2)}-{m.group(1).zfill(2)}"
+                if v is not None and (m := _re.match(v.strip()))
+                else v
+                for v in series.to_list()
+            ],
+            dtype=pl.Utf8,
+        )
+        return result
+
+    if output_type == "iso_month":
+        parsed = stripped.str.strptime(pl.Date, format=fmt, strict=False).dt.strftime("%Y-%m")
+    else:
+        parsed = stripped.str.strptime(pl.Date, format=fmt, strict=False).dt.strftime("%Y-%m-%d")
+
+    # Where parsing failed (null result), keep original stripped value
+    result = pl.Series(
+        series.name,
+        [p if p is not None else s for p, s in zip(parsed.to_list(), stripped.to_list())],
+        dtype=pl.Utf8,
+    )
+    return result
+
+
+def normalize_time_series(series: pl.Series) -> tuple[pl.Series, str]:
+    """
+    Normalize a time-role Series to ISO Utf8 text.
+
+    Returns (normalized_series, output_type) where output_type is
+    'iso_date' (YYYY-MM-DD) or 'iso_month' (YYYY-MM).
+    """
+    # Polars Date → ISO string
+    if series.dtype == pl.Date:
+        return series.cast(pl.Utf8, strict=False), "iso_date"
+    # Polars Datetime → ISO date string
+    if series.dtype in (pl.Datetime,) or str(series.dtype).startswith("Datetime"):
+        return series.dt.strftime("%Y-%m-%d"), "iso_date"
+
+    # String: detect format from samples
+    str_series = series.cast(pl.Utf8, strict=False)
+    samples = [s.strip() for s in str_series.drop_nulls().head(100).to_list() if s]
+    if not samples:
+        return str_series, "iso_date"
+
+    fmt, output_type = _detect_date_norm_rule(samples)
+    if fmt is None:
+        # Already ISO or unrecognized → return as-is
+        return str_series, output_type
+
+    try:
+        return _apply_date_norm(str_series, fmt, output_type), output_type
+    except Exception as exc:
+        logger.warning("Date normalization failed for %r: %s", series.name, exc)
+        return str_series, output_type
 
 
 # ---------------------------------------------------------------------------
@@ -548,6 +644,25 @@ def parse_file(file_path: str) -> dict[str, Any]:
                         sample_values=[],
                     )
                 )
+
+        # Normalize time-role columns to ISO Utf8 text so calendar joins work
+        norm_casts: list[pl.Series] = []
+        for col in parsed_columns:
+            if col.column_role != "time":
+                continue
+            try:
+                normalized, _iso_type = normalize_time_series(df[col.column_name])
+                norm_casts.append(normalized.alias(col.column_name))
+                col.data_type = "text"  # store as text so PG type matches calendar
+                col.sample_values = [
+                    str(v) for v in
+                    normalized.drop_nulls().unique(maintain_order=True).head(20).to_list()
+                    if v is not None
+                ]
+            except Exception as exc:
+                logger.warning("Date normalization failed for col %r: %s", col.column_name, exc)
+        if norm_casts:
+            df = df.with_columns(norm_casts)
 
         parsed_sheets.append(
             {

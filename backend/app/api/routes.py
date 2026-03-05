@@ -222,6 +222,11 @@ async def _build_baseline_df(
             dim_df = dim_df.rename(rename_map)
 
         try:
+            # Cast join keys to Utf8 so type mismatches (e.g. pl.Date vs pl.Utf8) don't break the join
+            if df[fact_col].dtype != pl.Utf8:
+                df = df.with_columns(pl.col(fact_col).cast(pl.Utf8, strict=False))
+            if dim_df[dim_col].dtype != pl.Utf8:
+                dim_df = dim_df.with_columns(pl.col(dim_col).cast(pl.Utf8, strict=False))
             df = df.join(dim_df, left_on=fact_col, right_on=dim_col, how="left")
         except Exception as exc:
             logger.warning("Join on %s.%s failed: %s", dim_dataset.name, dim_col, exc)
