@@ -252,7 +252,7 @@ function computePivot(data, rowFs, colF, valF, sortMode = "value_desc") {
   return { rows, colKeys: [...colKeysSet].sort() };
 }
 
-function applyRules(data, rules) {
+function applyRules(data, rules, valF = "amount") {
   let res = data.map(r => ({ ...r }));
   for (const rule of rules) {
     const matchIdx = [];
@@ -268,7 +268,7 @@ function applyRules(data, rules) {
       if (m) matchIdx.push(i);
     });
     if (rule.type === "multiplier") {
-      for (const i of matchIdx) res[i] = { ...res[i], amount: Math.round(res[i].amount * rule.factor * 100) / 100 };
+      for (const i of matchIdx) res[i] = { ...res[i], [valF]: Math.round(res[i][valF] * rule.factor * 100) / 100 };
     } else if (rule.type === "offset" && matchIdx.length > 0) {
       // Count distinct periods among matching rows
       const periodCounts = {};
@@ -283,7 +283,7 @@ function applyRules(data, rules) {
         const p = res[i]._period || res[i].period || "all";
         const rowsInPeriod = periodCounts[p] || 1;
         const share = perPeriod / rowsInPeriod;
-        res[i] = { ...res[i], amount: Math.round((res[i].amount + share) * 100) / 100 };
+        res[i] = { ...res[i], [valF]: Math.round((res[i][valF] + share) * 100) / 100 };
       }
     }
   }
@@ -1192,7 +1192,7 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema }) {
   const filtered = useMemo(() => applyFilters(baseline, filters), [baseline, filters]);
   const scOutputs = useMemo(() => {
     const o = {};
-    for (const sc of scenarios) if (active.has(sc.id)) o[sc.name] = applyFilters(applyRules(baseline, sc.rules), filters);
+    for (const sc of scenarios) if (active.has(sc.id)) o[sc.name] = applyFilters(applyRules(baseline, sc.rules, valF || measures[0] || "amount"), filters);
     return o;
   }, [scenarios, active, baseline, filters]);
   const editSc = scenarios.find(s => s.id === editId);
