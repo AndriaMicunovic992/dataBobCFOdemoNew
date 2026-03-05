@@ -253,6 +253,7 @@ function computePivot(data, rowFs, colF, valF, sortMode = "value_desc") {
 }
 
 function applyRules(data, rules, valF = "amount") {
+  if (!valF) return data;
   let res = data.map(r => ({ ...r }));
   for (const rule of rules) {
     const matchIdx = [];
@@ -268,22 +269,16 @@ function applyRules(data, rules, valF = "amount") {
       if (m) matchIdx.push(i);
     });
     if (rule.type === "multiplier") {
-      for (const i of matchIdx) res[i] = { ...res[i], [valF]: Math.round(res[i][valF] * rule.factor * 100) / 100 };
-    } else if (rule.type === "offset" && matchIdx.length > 0) {
-      // Count distinct periods among matching rows
-      const periodCounts = {};
       for (const i of matchIdx) {
-        const p = res[i]._period || res[i].period || "all";
-        periodCounts[p] = (periodCounts[p] || 0) + 1;
+        const cur = +res[i][valF] || 0;
+        res[i] = { ...res[i], [valF]: Math.round(cur * rule.factor * 100) / 100 };
       }
-      const numPeriods = Object.keys(periodCounts).length;
-      const perPeriod = rule.offset / (numPeriods || 1);
-      // Within each period, split evenly across matching rows
+    } else if (rule.type === "offset" && matchIdx.length > 0) {
+      // Distribute evenly across all matching rows so total always equals rule.offset
+      const share = rule.offset / matchIdx.length;
       for (const i of matchIdx) {
-        const p = res[i]._period || res[i].period || "all";
-        const rowsInPeriod = periodCounts[p] || 1;
-        const share = perPeriod / rowsInPeriod;
-        res[i] = { ...res[i], [valF]: Math.round((res[i][valF] + share) * 100) / 100 };
+        const cur = +res[i][valF] || 0;
+        res[i] = { ...res[i], [valF]: Math.round((cur + share) * 100) / 100 };
       }
     }
   }
@@ -1194,7 +1189,7 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema }) {
     const o = {};
     for (const sc of scenarios) if (active.has(sc.id)) o[sc.name] = applyFilters(applyRules(baseline, sc.rules, valF || measures[0] || "amount"), filters);
     return o;
-  }, [scenarios, active, baseline, filters]);
+  }, [scenarios, active, baseline, filters, valF, measures]);
   const editSc = scenarios.find(s => s.id === editId);
 
   function addScenario() {
