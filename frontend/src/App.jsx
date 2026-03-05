@@ -529,11 +529,12 @@ function WaterfallChart({ baseline, scenarioData, scenarioName, scenarioColor, r
   const data = useMemo(() => {
     if (!waterfallField || !scenarioData) return [];
     // Group baseline and scenario by waterfallField
+    const toN = v => { const n = +(v); return isNaN(n) ? 0 : n; };
     const groupBy = (arr) => {
       const g = {};
       for (const r of arr) {
         const k = String(r[waterfallField] ?? "Other");
-        g[k] = (g[k] || 0) + (r[valF] || 0);
+        g[k] = (g[k] || 0) + toN(r[valF]);
       }
       return g;
     };
@@ -552,8 +553,8 @@ function WaterfallChart({ baseline, scenarioData, scenarioName, scenarioColor, r
     // Sort by absolute delta descending
     items.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
 
-    const baseTotal = baseline.reduce((s, r) => s + (r[valF] || 0), 0);
-    const scTotal = scenarioData.reduce((s, r) => s + (r[valF] || 0), 0);
+    const baseTotal = baseline.reduce((s, r) => s + toN(r[valF]), 0);
+    const scTotal = scenarioData.reduce((s, r) => s + toN(r[valF]), 0);
 
     // Build waterfall bars
     const bars = [];
@@ -1218,7 +1219,8 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema }) {
   function updateRule(rid, updates) { setScenarios(p => p.map(s => s.id !== editId ? s : { ...s, rules: s.rules.map(r => r.id === rid ? { ...r, ...updates } : r) })); }
   const [editingRuleId, setEditingRuleId] = useState(null);
 
-  const numF = (r, f) => { const v = r[f]; return typeof v === "number" ? v : 0; };
+  // Safe numeric coercion: handles JS numbers AND numeric strings (e.g. from Decimal→JSON)
+  const numF = (r, f) => { const n = +(r[f]); return isNaN(n) ? 0 : n; };
   const variance = useMemo(() => {
     if (!active.size || !effectiveValF) return [];
     const at = filtered.reduce((s, r) => s + numF(r, effectiveValF), 0);

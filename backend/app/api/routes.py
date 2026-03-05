@@ -165,10 +165,16 @@ def _json_safe(v: Any) -> Any:
     """Coerce non-JSON-serialisable scalars."""
     import math
     from datetime import date, datetime
+    from decimal import Decimal
     if isinstance(v, float) and math.isnan(v):
         return None
     if isinstance(v, (date, datetime)):
         return v.isoformat()
+    if isinstance(v, Decimal):
+        # PostgreSQL Numeric columns come back as Decimal; send as float so JS
+        # receives a number, not a string (which breaks variance/chart math).
+        f = float(v)
+        return None if math.isnan(f) else f
     return v
 
 
