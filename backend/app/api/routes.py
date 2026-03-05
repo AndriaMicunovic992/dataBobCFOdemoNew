@@ -44,6 +44,7 @@ from app.schemas.api import (
     ScenarioUpdate,
     SchemaResponse,
 )
+from app.services import calendar_svc
 from app.services import parser as parser_svc
 from app.services import scenario as scenario_svc
 from app.services import schema_agent
@@ -449,7 +450,7 @@ async def upload_file(
                 )
         await db.commit()
 
-    # Reload with columns relationship populated
+    # Reload with columns relationship populated; auto-link to calendar
     responses: list[DatasetResponse] = []
     for ds in created_datasets:
         result = await db.execute(
@@ -459,6 +460,8 @@ async def upload_file(
         )
         loaded = result.scalar_one()
         responses.append(DatasetResponse.model_validate(loaded))
+
+        await calendar_svc.auto_link_calendar(db, loaded)
 
         if settings.ANTHROPIC_API_KEY_AGENT:
             background_tasks.add_task(_run_agent_and_persist, ds.id)
@@ -549,6 +552,9 @@ async def delete_dataset(
     dataset = result.scalar_one_or_none()
     if dataset is None:
         raise HTTPException(status_code=404, detail="Dataset not found")
+
+    if isinstance(dataset.ai_notes, dict) and dataset.ai_notes.get("is_system"):
+        raise HTTPException(status_code=403, detail="System datasets cannot be deleted.")
 
     if hard:
         storage_svc.drop_dataset_table(sync_engine, dataset.table_name)
