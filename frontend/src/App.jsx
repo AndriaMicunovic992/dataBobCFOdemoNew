@@ -1182,10 +1182,15 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema }) {
   const [ruleValSearch, setRuleValSearch] = useState("");
   const ruleFilterRef = useRef(null);
   const [waterfallField, setWaterfallField] = useState("");
-  // Auto-select first dim as waterfall breakdown if user hasn't chosen one
-  const effectiveWaterfallField = waterfallField || dims[0] || "";
+
+  // Auto-init valF to first measure when data loads
+  useEffect(() => {
+    if (!valF && measures.length > 0) setValF(measures[0]);
+  }, [measures]);
 
   const effectiveValF = valF || measures[0] || "amount";
+  // Only use auto-fallback waterfall field when dims exist; don't pick a bad one
+  const effectiveWaterfallField = waterfallField || "";
 
   const toggle = id => setActive(p => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const filtered = useMemo(() => applyFilters(baseline, filters), [baseline, filters]);
@@ -1213,12 +1218,13 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema }) {
   function updateRule(rid, updates) { setScenarios(p => p.map(s => s.id !== editId ? s : { ...s, rules: s.rules.map(r => r.id === rid ? { ...r, ...updates } : r) })); }
   const [editingRuleId, setEditingRuleId] = useState(null);
 
+  const numF = (r, f) => { const v = r[f]; return typeof v === "number" ? v : 0; };
   const variance = useMemo(() => {
-    if (!active.size) return [];
-    const at = filtered.reduce((s, r) => s + (r[effectiveValF] || 0), 0);
+    if (!active.size || !effectiveValF) return [];
+    const at = filtered.reduce((s, r) => s + numF(r, effectiveValF), 0);
     return scenarios.filter(sc => active.has(sc.id)).map(sc => {
       const sd = scOutputs[sc.name] || [];
-      const st = sd.reduce((s, r) => s + (r[effectiveValF] || 0), 0);
+      const st = sd.reduce((s, r) => s + numF(r, effectiveValF), 0);
       return { name: sc.name, color: sc.color, total: st, variance: st - at, pct: at ? ((st - at) / Math.abs(at)) * 100 : 0 };
     });
   }, [active, scenarios, scOutputs, filtered, effectiveValF]);
@@ -1465,14 +1471,18 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema }) {
             <div style={S.cardT}>Waterfall Analysis</div>
             <FieldManager label="" allFields={dims} selected={waterfallField} onChange={setWaterfallField} color={C.purple} single />
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: `repeat(${Math.min(scenarios.filter(sc => active.has(sc.id)).length, 2)}, 1fr)`, gap: 14 }}>
-            {scenarios.filter(sc => active.has(sc.id)).map(sc => (
-              <div key={sc.id}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: sc.color, marginBottom: 6, textAlign: "center" }}>{sc.name}</div>
-                <WaterfallChart baseline={filtered} scenarioData={scOutputs[sc.name]} scenarioName={sc.name} scenarioColor={sc.color} rowFs={rowFs} valF={effectiveValF} waterfallField={effectiveWaterfallField} />
-              </div>
-            ))}
-          </div>
+          {effectiveWaterfallField ? (
+            <div style={{ display: "grid", gridTemplateColumns: `repeat(${Math.min(scenarios.filter(sc => active.has(sc.id)).length, 2)}, 1fr)`, gap: 14 }}>
+              {scenarios.filter(sc => active.has(sc.id)).map(sc => (
+                <div key={sc.id}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: sc.color, marginBottom: 6, textAlign: "center" }}>{sc.name}</div>
+                  <WaterfallChart baseline={filtered} scenarioData={scOutputs[sc.name]} scenarioName={sc.name} scenarioColor={sc.color} rowFs={rowFs} valF={effectiveValF} waterfallField={effectiveWaterfallField} />
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ textAlign: "center", padding: 24, color: C.textMuted, fontSize: 12 }}>Select a dimension above to break down changes.</div>
+          )}
         </div>
       )}
 
@@ -1488,7 +1498,7 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema }) {
             </tr></thead>
             <tbody>
               <tr><td style={S.td}><span style={{ color: C.textSec }}>● Actuals</span></td>
-                <td style={{ ...S.td, ...S.mono, textAlign: "right" }}>{fmt(filtered.reduce((s, r) => s + (r[effectiveValF] || 0), 0))}</td>
+                <td style={{ ...S.td, ...S.mono, textAlign: "right" }}>{fmt(filtered.reduce((s, r) => s + numF(r, effectiveValF), 0))}</td>
                 <td style={{ ...S.td, textAlign: "right" }}>—</td><td style={{ ...S.td, textAlign: "right" }}>—</td></tr>
               {variance.map(v => (
                 <tr key={v.name}>
