@@ -183,7 +183,7 @@ async def analyze_schema(tables: list[dict]) -> dict:
     user_message = _build_user_message(tables)
 
     response = await client.messages.create(
-        model="claude-opus-4-6",
+        model="claude-sonnet-4-6",
         max_tokens=4096,
         system=_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_message}],
