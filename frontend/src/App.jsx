@@ -1009,7 +1009,12 @@ function SchemaView({ tables, schema, setSchema, relationships, setRelationships
                 {info.aiAnalyzing && (
                   <span style={{ ...S.badge(C.amber), fontSize: 9, animation: "pulse 1.5s infinite" }}>⏳ Analyzing…</span>
                 )}
-                <span style={S.badge(info.isFact ? C.brand : C.purple)}>{info.isFact ? "FACT" : "DIMENSION"}</span>
+                <span style={S.badge(
+                  info.aiNotes?.is_system ? C.green :
+                  info.isFact ? C.brand : C.purple
+                )}>
+                  {info.aiNotes?.is_system ? "CALENDAR" : info.isFact ? "FACT" : "DIMENSION"}
+                </span>
               </div>
             </div>
             {info.aiNotes?.description && (
@@ -1750,29 +1755,32 @@ function UploadModal({ isOpen, onClose, onUploaded, schemaList }) {
               <div style={{ fontSize: 11, fontWeight: 700, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 8 }}>Loaded Datasets</div>
               <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                 {schemaList.map(sr => {
-                  const isDeleting = deletingId === sr.dataset.id;
+                  const isSystem = !!(sr.dataset.ai_notes?.is_system);
+                  const isDeleting = !isSystem && deletingId === sr.dataset.id;
                   const analyzed = sr.dataset.ai_analyzed;
                   return (
                     <div key={sr.dataset.id} style={{
                       display: "flex", alignItems: "center", gap: 10,
                       padding: "9px 12px", borderRadius: 8,
-                      background: isDeleting ? "#fff0f0" : C.bg,
-                      border: `1px solid ${isDeleting ? C.red + "44" : C.border}`,
-                      fontSize: 12,
+                      background: isSystem ? C.green + "11" : isDeleting ? "#fff0f0" : C.bg,
+                      border: `1px solid ${isSystem ? C.green + "44" : isDeleting ? C.red + "44" : C.border}`,
+                      fontSize: 12, opacity: isSystem ? 0.85 : 1,
                     }}>
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <span style={{ fontWeight: 600, color: C.text }}>{sr.dataset.source_filename ?? sr.dataset.name}</span>
+                        <span style={{ fontWeight: 600, color: C.text }}>
+                          {isSystem ? "📅 Calendar (2020–2027)" : (sr.dataset.source_filename ?? sr.dataset.name)}
+                        </span>
                         <span style={{ color: C.textMuted, marginLeft: 8 }}>{sr.dataset.row_count.toLocaleString()} rows</span>
                       </div>
-                      <span style={{ ...S.badge(analyzed ? C.green : (Date.now() - new Date(sr.dataset.created_at).getTime() < 180_000 ? C.amber : C.border)), fontSize: 9 }}>
-                        {analyzed ? "✓ Analyzed" : (Date.now() - new Date(sr.dataset.created_at).getTime() < 180_000 ? "⏳ Analyzing…" : "—")}
+                      <span style={{ ...S.badge(isSystem ? C.green : analyzed ? C.green : (Date.now() - new Date(sr.dataset.created_at).getTime() < 180_000 ? C.amber : C.border)), fontSize: 9 }}>
+                        {isSystem ? "SYSTEM" : analyzed ? "✓ Analyzed" : (Date.now() - new Date(sr.dataset.created_at).getTime() < 180_000 ? "⏳ Analyzing…" : "—")}
                       </span>
-                      {isDeleting ? (
+                      {!isSystem && (isDeleting ? (
                         <button onClick={() => handleDelete(sr.dataset.id)} style={{ ...S.btn("danger", true), fontSize: 11, padding: "3px 10px" }}>Confirm</button>
                       ) : (
                         <span onClick={() => setDeletingId(sr.dataset.id)} title="Delete dataset" style={{ cursor: "pointer", color: C.textMuted, fontSize: 15, padding: "2px 4px" }}>🗑</span>
-                      )}
-                      {isDeleting && (
+                      ))}
+                      {!isSystem && isDeleting && (
                         <span onClick={() => setDeletingId(null)} style={{ cursor: "pointer", color: C.textMuted, fontSize: 12 }}>Cancel</span>
                       )}
                     </div>

@@ -9,6 +9,7 @@ from app.config import settings
 from app.database import async_engine, Base
 import app.models  # noqa: F401 – registers models with Base.metadata
 from app.api.routes import router
+from app.services.calendar_svc import ensure_calendar
 
 
 @asynccontextmanager
@@ -16,6 +17,10 @@ async def lifespan(app: FastAPI):
     # Startup: create all tables
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    try:
+        await ensure_calendar()
+    except Exception:
+        pass  # non-fatal — app starts even if calendar seeding fails
     yield
     # Shutdown: dispose engine
     await async_engine.dispose()
