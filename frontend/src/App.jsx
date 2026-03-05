@@ -9,6 +9,7 @@ import {
   updateRelationship as apiUpdateRelationship,
   deleteRelationship as apiDeleteRelationship,
   streamChat,
+  getScenarios, createScenario, updateScenario, deleteScenario,
 } from "./api.js";
 
 // ─── THEME ──────────────────────────────────────────────────────
@@ -101,100 +102,6 @@ const S = {
 
 // ─── DATA ENGINE ────────────────────────────────────────────────
 const ROLE_OPTIONS = ["key", "measure", "attribute", "time", "ignore"];
-
-function autoRole(name, vals) {
-  const c = vals.filter(v => v != null);
-  if (!c.length) return "ignore";
-  const nr = c.filter(v => typeof v === "number").length / c.length;
-  const isId = name.toLowerCase().includes("_id") || name.toLowerCase().endsWith("nr");
-  const isDate = c.some(v => typeof v === "string" && /^\d{4}-\d{2}/.test(v));
-  if (isDate) return "time";
-  if (isId) return "key";
-  if (nr > 0.8 && !isId && name !== "entry_count") return "measure";
-  return "attribute";
-}
-
-function discoverSchema(tables) {
-  const schema = {};
-  for (const [name, table] of Object.entries(tables)) {
-    const { headers, data } = table;
-    const columns = headers.map(h => {
-      const vals = data.slice(0, 200).map(r => r[h]);
-      return { name: h, role: autoRole(h, vals), uniqueCount: new Set(vals.filter(v => v != null).map(String)).size };
-    });
-    schema[name] = {
-      columns,
-      isFact: columns.some(c => c.role === "measure") && columns.filter(c => c.role === "key").length >= 2,
-      rowCount: data.length
-    };
-  }
-  return schema;
-}
-
-function autoDiscoverRelationships(tables, schema) {
-  const rels = [];
-  const ns = Object.keys(schema);
-  for (let i = 0; i < ns.length; i++) {
-    for (let j = i + 1; j < ns.length; j++) {
-      const shared = schema[ns[i]].columns.map(c => c.name)
-        .filter(c => schema[ns[j]].columns.some(d => d.name === c) && c.includes("_id"));
-      for (const col of shared) {
-        const v1 = new Set(tables[ns[i]].data.map(r => r[col]).filter(v => v != null).map(String));
-        const v2 = new Set(tables[ns[j]].data.map(r => r[col]).filter(v => v != null).map(String));
-        const ov = [...v1].filter(v => v2.has(v)).length;
-        rels.push({
-          id: `${ns[i]}-${ns[j]}-${col}`,
-          from: ns[i], to: ns[j], fromCol: col, toCol: col,
-          coverage: Math.round(ov / Math.min(v1.size || 1, v2.size || 1) * 100),
-          overlapCount: ov
-        });
-      }
-    }
-  }
-  return rels;
-}
-
-function buildBaseline(tables, schema, relationships) {
-  const fn = Object.entries(schema).find(([, s]) => s.isFact)?.[0];
-  if (!fn) return [];
-  const lk = {};
-  for (const rel of relationships) {
-    const dimName = rel.from === fn ? rel.to : rel.to === fn ? rel.from : null;
-    if (!dimName || !tables[dimName]) continue;
-    const dimKeyCol = rel.from === fn ? rel.toCol : rel.fromCol;
-    const factKeyCol = rel.from === fn ? rel.fromCol : rel.toCol;
-    if (lk[dimName]) continue;
-    const map = {};
-    for (const row of tables[dimName].data) map[row[dimKeyCol]] = row;
-    const dimCols = schema[dimName]?.columns.filter(c => c.role === "attribute" || c.role === "time") || [];
-    lk[dimName] = { map, factKeyCol, dimCols };
-  }
-  // Time columns in the fact table (for auto-deriving calendar fields)
-  const timeCols = (schema[fn]?.columns || []).filter(c => c.role === "time").map(c => c.name);
-  const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-  return tables[fn].data.map(row => {
-    const e = { ...row };
-    // Derive calendar fields from explicit 'period' column or any time-role column
-    const rawDate = row.period || timeCols.map(c => row[c]).find(v => v != null) || null;
-    if (rawDate) {
-      const s = String(rawDate);
-      if (/^\d{4}-\d{2}/.test(s)) {
-        e._year = s.slice(0, 4);
-        e._month = s.slice(5, 7);
-        e._month_year = s.slice(0, 7);
-        e._period = s.slice(0, 7);
-        if (s.length >= 10) e._date = s.slice(0, 10);
-        const mIdx = parseInt(e._month, 10) - 1;
-        if (mIdx >= 0 && mIdx < 12) e._month_name = MONTHS[mIdx];
-      }
-    }
-    for (const [, l] of Object.entries(lk)) {
-      const dr = l.map[row[l.factKeyCol]];
-      if (dr) for (const dc of l.dimCols) e[dc.name] = dr[dc.name];
-    }
-    return e;
-  });
-}
 
 function getDimFields(bl) {
   if (!bl.length) return [];
@@ -819,7 +726,7 @@ function ComparisonTable({ baseline, scenarioOutputs, rowFs, colF, valF, scenari
 // ═══════════════════════════════════════════════════════════════
 // SCHEMA VIEW (with editable roles + editable relationships)
 // ═══════════════════════════════════════════════════════════════
-function SchemaView({ tables, schema, setSchema, relationships, setRelationships, onOpenUpload }) {
+function SchemaView({ schema, setSchema, relationships, setRelationships, onOpenUpload }) {
   const [addRelOpen, setAddRelOpen] = useState(false);
   const [newRel, setNewRel] = useState({ from: "", to: "", fromCol: "", toCol: "" });
   const [dismissedSuggestions, setDismissedSuggestions] = useState(new Set());
@@ -853,14 +760,11 @@ function SchemaView({ tables, schema, setSchema, relationships, setRelationships
 
   function addRelationship() {
     if (!newRel.from || !newRel.to || !newRel.fromCol || !newRel.toCol) return;
-    const v1 = new Set((tables[newRel.from]?.data ?? []).map(r => r[newRel.fromCol]).filter(v => v != null).map(String));
-    const v2 = new Set((tables[newRel.to]?.data ?? []).map(r => r[newRel.toCol]).filter(v => v != null).map(String));
-    const ov = [...v1].filter(v => v2.has(v)).length;
     setRelationships(p => [...p, {
       id: `${newRel.from}-${newRel.to}-${newRel.fromCol}-${Date.now()}`,
       ...newRel,
-      coverage: Math.round(ov / Math.min(v1.size || 1, v2.size || 1) * 100),
-      overlapCount: ov
+      coverage: null,
+      overlapCount: null,
     }]);
     setNewRel({ from: "", to: "", fromCol: "", toCol: "" });
     setAddRelOpen(false);
@@ -870,14 +774,11 @@ function SchemaView({ tables, schema, setSchema, relationships, setRelationships
 
   function acceptSuggestion(sug) {
     const from = sug.source_table, fromCol = sug.source_column, to = sug.target_table, toCol = sug.target_column;
-    const v1 = new Set((tables[from]?.data ?? []).map(r => r[fromCol]).filter(v => v != null).map(String));
-    const v2 = new Set((tables[to]?.data ?? []).map(r => r[toCol]).filter(v => v != null).map(String));
-    const ov = [...v1].filter(v => v2.has(v)).length;
     setRelationships(p => [...p, {
       id: `${from}-${to}-${fromCol}-${Date.now()}`,
       from, fromCol, to, toCol,
-      coverage: Math.round(ov / Math.min(v1.size || 1, v2.size || 1) * 100),
-      overlapCount: ov,
+      coverage: null,
+      overlapCount: null,
     }]);
   }
 
@@ -889,11 +790,7 @@ function SchemaView({ tables, schema, setSchema, relationships, setRelationships
   function updateRelCol(id, side, col) {
     setRelationships(p => p.map(r => {
       if (r.id !== id) return r;
-      const updated = { ...r, [side]: col };
-      const v1 = new Set((tables[updated.from]?.data ?? []).map(row => row[updated.fromCol]).filter(v => v != null).map(String));
-      const v2 = new Set((tables[updated.to]?.data ?? []).map(row => row[updated.toCol]).filter(v => v != null).map(String));
-      const ov = [...v1].filter(v => v2.has(v)).length;
-      return { ...updated, coverage: Math.round(ov / Math.min(v1.size || 1, v2.size || 1) * 100), overlapCount: ov };
+      return { ...r, [side]: col, coverage: null, overlapCount: null };
     }));
   }
 
@@ -1164,7 +1061,7 @@ function RuleFilterAdd({ dims, existingFilters, onAdd }) {
   );
 }
 
-function ScenariosView({ baseline, scenarios, setScenarios, schema }) {
+function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetId }) {
   const dims = useMemo(() => getDimFields(baseline), [baseline]);
   const measures = useMemo(() => getMeasureFields(baseline, schema), [baseline, schema]);
   const periods = useMemo(() => getUniq(baseline, "_period"), [baseline]);
@@ -1202,10 +1099,18 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema }) {
   }, [scenarios, active, baseline, filters, effectiveValF]);
   const editSc = scenarios.find(s => s.id === editId);
 
-  function addScenario() {
-    const id = Date.now();
-    setScenarios(p => [...p, { id, name: `Scenario ${p.length + 1}`, rules: [], color: SC_COLORS[p.length % SC_COLORS.length] }]);
-    setEditId(id); setActive(p => new Set([...p, id]));
+  async function addScenario() {
+    const color = SC_COLORS[scenarios.length % SC_COLORS.length];
+    const name = `Scenario ${scenarios.length + 1}`;
+    try {
+      const created = await createScenario({ name, dataset_id: factDatasetId, rules: [], color });
+      setScenarios(p => [...p, { id: created.id, name: created.name, rules: created.rules || [], color: created.color || color }]);
+      setEditId(created.id); setActive(p => new Set([...p, created.id]));
+    } catch {
+      const id = Date.now();
+      setScenarios(p => [...p, { id, name, rules: [], color }]);
+      setEditId(id); setActive(p => new Set([...p, id]));
+    }
   }
   function delScenario(id) { setScenarios(p => p.filter(s => s.id !== id)); setActive(p => { const n = new Set(p); n.delete(id); return n; }); if (editId === id) setEditId(null); }
   function renameScenario(id, newName) { if (newName.trim()) setScenarios(p => p.map(s => s.id === id ? { ...s, name: newName.trim() } : s)); }
@@ -1575,12 +1480,16 @@ function ChatPanel({ baseline, scenarios, setScenarios, setActiveTab, datasetId 
           pendingRules.push({ ...event.rule, id: Date.now() + pendingRules.length });
         } else if (event.type === "done") {
           if (pendingRules.length) {
-            setScenarios(p => [...p, {
-              id: Date.now(),
-              name: `Scenario ${p.length + 1}`,
-              rules: pendingRules,
-              color: SC_COLORS[p.length % SC_COLORS.length],
-            }]);
+            setScenarios(p => {
+              const color = SC_COLORS[p.length % SC_COLORS.length];
+              const name = `Scenario ${p.length + 1}`;
+              createScenario({ name, dataset_id: datasetId, rules: pendingRules, color }).then(created => {
+                setScenarios(prev => [...prev, { id: created.id, name: created.name, rules: created.rules || pendingRules, color: created.color || color }]);
+              }).catch(() => {
+                setScenarios(prev => [...prev, { id: Date.now(), name, rules: pendingRules, color }]);
+              });
+              return p;
+            });
             setActiveTab("scenarios");
           }
           // Ensure placeholder has content
@@ -1986,6 +1895,24 @@ export default function App() {
     [schemaList]
   );
 
+  // ── Scenarios from API ──────────────────────────────────────────
+  const { data: apiScenarios = [] } = useQuery({
+    queryKey: ["scenarios", factDataset?.dataset.id],
+    queryFn: () => getScenarios(factDataset.dataset.id),
+    enabled: !!factDataset?.dataset.id,
+    staleTime: 30_000,
+  });
+  useEffect(() => {
+    if (apiScenarios.length) {
+      setScenarios(apiScenarios.map(s => ({
+        id: s.id,
+        name: s.name,
+        rules: s.rules || [],
+        color: s.color || SC_COLORS[0],
+      })));
+    }
+  }, [apiScenarios]);
+
   // ── Dataset name → id lookup (for relationship creation) ────────
   const dsNameToId = useMemo(
     () => Object.fromEntries(schemaList.map(sr => [sr.dataset.name, sr.dataset.id])),
@@ -2059,6 +1986,31 @@ export default function App() {
     });
   }
 
+  // ── Scenario change handler — persists updates to API ──────────
+  function handleSetScenarios(updater) {
+    setScenarios(prev => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      const prevIds = new Set(prev.map(s => s.id));
+      const nextIds = new Set(next.map(s => s.id));
+      // Deleted
+      for (const s of prev) {
+        if (!nextIds.has(s.id)) {
+          deleteScenario(s.id).catch(console.error);
+        }
+      }
+      // Modified (addScenario handles creation directly, so only update existing ids)
+      for (const s of next) {
+        if (prevIds.has(s.id)) {
+          const p = prev.find(x => x.id === s.id);
+          if (p && JSON.stringify(p) !== JSON.stringify(s)) {
+            updateScenario(s.id, { name: s.name, rules: s.rules, color: s.color }).catch(console.error);
+          }
+        }
+      }
+      return next;
+    });
+  }
+
   if (isLoading) return <LoadingScreen />;
   if (!schemaList.length) return <UploadScreen onUploaded={() => queryClient.invalidateQueries({ queryKey: ["datasets"] })} />;
 
@@ -2109,11 +2061,11 @@ export default function App() {
 
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
         <div style={{ flex: 1, overflow: "auto", padding: 24 }}>
-          {tab === "schema" && <SchemaView tables={{}} schema={schema} setSchema={handleSetSchema} relationships={relationships} setRelationships={handleSetRelationships} onOpenUpload={() => setUploadOpen(true)} />}
+          {tab === "schema" && <SchemaView schema={schema} setSchema={handleSetSchema} relationships={relationships} setRelationships={handleSetRelationships} onOpenUpload={() => setUploadOpen(true)} />}
           {tab === "actuals" && <ActualsView baseline={baseline} schema={schema} />}
-          {tab === "scenarios" && <ScenariosView baseline={baseline} scenarios={scenarios} setScenarios={setScenarios} schema={schema} />}
+          {tab === "scenarios" && <ScenariosView baseline={baseline} scenarios={scenarios} setScenarios={handleSetScenarios} schema={schema} factDatasetId={factDataset?.dataset.id} />}
         </div>
-        <ChatPanel baseline={baseline} scenarios={scenarios} setScenarios={setScenarios} setActiveTab={setTab} datasetId={factDataset?.dataset.id} />
+        <ChatPanel baseline={baseline} scenarios={scenarios} setScenarios={handleSetScenarios} setActiveTab={setTab} datasetId={factDataset?.dataset.id} />
       </div>
       <UploadModal
         isOpen={uploadOpen}
