@@ -544,6 +544,110 @@ def generate_projection(
     return pl.DataFrame()
 
 
+def _normalize_base_config(config: dict | None) -> dict:
+    """Normalise both old and new base_config formats to new format.
+
+    Old format (Step 4 legacy): has "method" key ("copy_year", "average", etc.)
+    New format (Step 3 redesign): has "source" and "projection_method" keys.
+    """
+    if not config:
+        return {"source": "actuals", "projection_method": "none"}
+    # Already new format
+    if "source" in config:
+        return config
+    # Old format: translate
+    old_method = config.get("method", "none")
+    method_map = {"copy_year": "copy", "average": "average", "last_n_months": "average", "none": "none"}
+    return {
+        "source": "actuals",
+        "source_scenario_id": None,
+        "period_from": None,
+        "period_to": None,
+        "project_to_year": config.get("target_year"),
+        "projection_method": method_map.get(old_method, "none"),
+        "growth_pct": config.get("growth_pct", 0.0),
+    }
+
+
+def build_scenario_data(
+    actuals_df: "pl.DataFrame",
+    scenario_rules: list[dict],
+    baseline_config: dict | None,
+    all_scenarios: dict[str, dict] | None = None,
+    value_column: str = "amount",
+    _depth: int = 0,
+) -> "pl.DataFrame":
+    """Build the full scenario output with selectable baseline and optional projection.
+
+    Steps:
+    1. Determine baseline (actuals filtered by period, or another scenario's output)
+    2. Project into future periods if configured
+    3. Apply this scenario's rules
+
+    ``_depth`` prevents infinite recursion in chained scenarios (max 5 levels).
+    """
+    if _depth > 5:
+        logger.warning("Scenario chain depth exceeded 5, stopping recursion")
+        return actuals_df
+
+    config = _normalize_base_config(baseline_config)
+    source = config.get("source", "actuals")
+    period_from = config.get("period_from")
+    period_to = config.get("period_to")
+
+    # Step 1: Get base data
+    if source == "scenario" and config.get("source_scenario_id") and all_scenarios:
+        src_id = config["source_scenario_id"]
+        src_sc = all_scenarios.get(src_id)
+        if src_sc:
+            base_df = build_scenario_data(
+                actuals_df, src_sc.get("rules", []), src_sc.get("base_config"),
+                all_scenarios, value_column, _depth=_depth + 1,
+            )
+        else:
+            logger.warning("Source scenario %s not found, falling back to actuals", src_id)
+            base_df = actuals_df
+    else:
+        base_df = actuals_df
+
+    # Step 2: Filter to period range if specified
+    period_col = _find_period_col(base_df)
+    if period_col and (period_from or period_to):
+        mask = pl.lit(True)
+        if period_from:
+            mask = mask & (pl.col(period_col).cast(pl.Utf8) >= period_from)
+        if period_to:
+            mask = mask & (pl.col(period_col).cast(pl.Utf8) <= period_to)
+        base_df = base_df.filter(mask)
+
+    # Step 3: Tag as actual and optionally project to future year
+    combined = base_df.with_columns(pl.lit("actual").alias("_data_source"))
+    project_to = config.get("project_to_year")
+    proj_method = config.get("projection_method", "none")
+    if project_to and proj_method != "none":
+        # Derive source_year from period_from or first period in data
+        source_year: str | None = None
+        if period_from and len(period_from) >= 4:
+            source_year = period_from[:4]
+        elif period_col and not base_df.is_empty():
+            first = base_df[period_col].cast(pl.Utf8).drop_nulls().sort().head(1).item()
+            source_year = first[:4] if first else None
+        if source_year:
+            proj_config = {
+                "method": "copy_year" if proj_method == "copy" else proj_method,
+                "source_year": source_year,
+                "target_year": str(project_to),
+                "growth_pct": config.get("growth_pct", 0.0),
+            }
+            projected = generate_projection(base_df, proj_config, value_column)
+            if not projected.is_empty():
+                combined = pl.concat([combined, projected], how="diagonal_relaxed")
+
+    # Step 4: Apply rules
+    result = apply_rules(combined, scenario_rules, value_column)
+    return result
+
+
 def _next_periods(last_period: str, n: int) -> list[str]:
     """Return the next N YYYY-MM periods after last_period."""
     try:

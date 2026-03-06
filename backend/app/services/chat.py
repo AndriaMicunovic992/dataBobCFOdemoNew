@@ -7,10 +7,11 @@ Architecture
 ~~~~~~~~~~~~
 1.  ``build_system_prompt`` turns the dataset schema into a concise XML
     context block (< 4 000 tokens).
-2.  Three tools are exposed to Claude:
+2.  Four tools are exposed to Claude:
     - **query_data** – run a grouped aggregation query
     - **create_scenario_rule** – build a what-if rule + impact preview
     - **list_dimension_values** – look up unique column values
+    - **list_scenarios** – list existing scenarios for this dataset
 3.  ``stream_chat`` is an async generator that yields typed SSE events
     (text_delta, tool_executing, tool_result, scenario_rule, done, error).
     The tool-use loop runs up to 3 rounds so Claude can call a tool,
@@ -127,6 +128,14 @@ TOOLS = [
                     "type": "string",
                     "description": "End period (YYYY-MM or YYYY-MM-DD).  Optional.",
                 },
+                "scenario_id": {
+                    "type": "string",
+                    "description": (
+                        "ID of an existing scenario to add this rule to. "
+                        "Use list_scenarios first to find the right ID. "
+                        "If omitted, a new scenario will be created."
+                    ),
+                },
                 "base_config": {
                     "type": "object",
                     "description": (
@@ -187,6 +196,19 @@ TOOLS = [
                     "description": "Optional substring filter (case-insensitive)",
                 },
             },
+        },
+    },
+    {
+        "name": "list_scenarios",
+        "description": (
+            "List existing scenarios for this dataset. Use this BEFORE creating "
+            "a scenario rule to check if a relevant scenario already exists. "
+            "If the user says 'also increase X' or 'add another rule', you should "
+            "add the rule to the existing scenario rather than creating a new one."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
         },
     },
 ]
@@ -300,6 +322,8 @@ async def execute_tool(
         return _tool_list_dimension_values(
             tool_input, table_name, dataset_id=dataset_id, baseline_df=baseline_df
         )
+    elif tool_name == "list_scenarios":
+        return _tool_list_scenarios(dataset_id)
     else:
         return {"error": f"Unknown tool: {tool_name}"}
 
@@ -413,11 +437,31 @@ def _tool_create_scenario_rule(inp: dict, table_name: str, baseline_df: Any = No
             else:
                 estimated_delta = rule["offset"]
 
-        rule["_preview"] = {
+        preview: dict[str, Any] = {
             "affected_rows": affected_rows,
             "total_rows": len(df),
             "estimated_delta": round(estimated_delta, 2) if estimated_delta is not None else None,
         }
+        # Validation warnings
+        total = len(df)
+        if total > 0 and affected_rows == total and rule.get("filters"):
+            preview["warning"] = (
+                f"WARNING: The filter matched ALL {total} rows. "
+                "This means the filter values may not exist in the data. "
+                "The change will apply to the entire dataset."
+            )
+        elif total > 0 and affected_rows == total and not rule.get("filters"):
+            preview["warning"] = (
+                f"WARNING: No filter specified — this rule will apply to ALL {total} rows. "
+                "For financial data, you almost always want to filter by a category "
+                "(e.g. revenue, personnel costs, materials)."
+            )
+        elif affected_rows == 0:
+            preview["warning"] = (
+                "WARNING: No rows matched the filter. The rule will have no effect. "
+                "Check that the filter column and values are correct."
+            )
+        rule["_preview"] = preview
     except Exception as exc:
         logger.warning("Impact preview failed: %s", exc)
         rule["_preview"] = {"error": str(exc)}
@@ -487,6 +531,42 @@ def _tool_list_dimension_values(
         "total_unique": df[col_name].n_unique(),
         "showing": len(raw_values),
     }
+
+
+def _tool_list_scenarios(dataset_id: str) -> dict:
+    """Return existing scenarios for the current dataset."""
+    from sqlalchemy import text
+    try:
+        with sync_engine.connect() as conn:
+            rows = conn.execute(
+                text("""
+                    SELECT id, name, rules, color, base_config
+                    FROM scenarios
+                    WHERE dataset_id = :ds_id
+                    ORDER BY created_at DESC
+                """),
+                {"ds_id": dataset_id},
+            ).fetchall()
+            scenarios = []
+            for row in rows:
+                rules_data = row[2] if isinstance(row[2], list) else []
+                scenarios.append({
+                    "id": row[0],
+                    "name": row[1],
+                    "rule_count": len(rules_data),
+                    "rules_summary": [
+                        {
+                            "name": r.get("name", ""),
+                            "type": r.get("type", ""),
+                            "filters": r.get("filters", {}),
+                        }
+                        for r in rules_data
+                    ],
+                    "color": row[3],
+                })
+            return {"scenarios": scenarios, "count": len(scenarios)}
+    except Exception as exc:
+        return {"error": str(exc)}
 
 
 def _safe(v: Any) -> Any:
@@ -585,6 +665,19 @@ def _build_system_prompt_from_context(context: str) -> str:
         "  target_year=2025, growth_pct=<any requested growth %>.  For 'average last 3 months',\n"
         "  use method='last_n_months', last_n=3, target_year=<requested year>.\n"
         "- If the data context includes scenario_hints, follow those instructions exactly.\n"
+        "- FINANCIAL RULES: When building scenario rules for financial data:\n"
+        "  * ALWAYS include a filter — NEVER apply a rule to all rows.\n"
+        "  * 'Increase revenue by 10%' → filter on revenue category ONLY.\n"
+        "  * 'Reduce costs by 5%' → filter on cost categories ONLY, not revenue.\n"
+        "  * If unsure which column/value to use, call list_dimension_values first.\n"
+        "  * If there's no clear grouping column, ASK the user to specify.\n"
+        "  * After creating a rule, check _preview warnings in the tool result and explain to the\n"
+        "    user if the filter matched all rows or zero rows — that indicates something is wrong.\n"
+        "- SCENARIO MANAGEMENT:\n"
+        "  * Before creating a new scenario, call list_scenarios to check what already exists.\n"
+        "  * If the user says 'also increase X', 'add another rule', or similar → add the rule to\n"
+        "    the EXISTING scenario by passing scenario_id to create_scenario_rule.\n"
+        "  * Only create a brand-new scenario when the user explicitly asks for one.\n"
         "- Format numbers with thousand separators.\n"
         "- If the data appears to be German, respond in German when the user writes in German.\n"
         "</instructions>"
@@ -744,7 +837,11 @@ async def stream_chat(
 
                 # Emit scenario_rule event for create_scenario_rule
                 if tu["name"] == "create_scenario_rule" and "error" not in result:
-                    yield _sse_event({"type": "scenario_rule", "rule": result})
+                    yield _sse_event({
+                        "type": "scenario_rule",
+                        "rule": result,
+                        "scenario_id": tu["input"].get("scenario_id"),  # null=new, str=existing
+                    })
 
                 tool_results.append({
                     "type": "tool_result",

@@ -1222,15 +1222,22 @@ async def compute_scenario(
         value_col = numeric_cols[0]
         logger.info("compute_scenario: using %r as value_column", value_col)
 
+    # Load ALL scenarios for this dataset (needed for chained baselines)
+    all_sc_result = await db.execute(
+        select(Scenario).where(Scenario.dataset_id == scenario.dataset_id)
+    )
+    all_scenarios = {
+        s.id: {"rules": s.rules, "base_config": s.base_config}
+        for s in all_sc_result.scalars().all()
+    }
+
     try:
-        scenario_df = scenario_svc.apply_scenario_with_projection(
-            baseline_df,
-            scenario.rules,
-            scenario.base_config,
-            value_col,
+        scenario_df = scenario_svc.build_scenario_data(
+            baseline_df, scenario.rules, scenario.base_config,
+            all_scenarios, value_col,
         )
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Rule application failed: {exc}") from exc
+        raise HTTPException(status_code=500, detail=f"Scenario computation failed: {exc}") from exc
 
     # Determine actual vs projected periods for the response
     period_col = scenario_svc._find_period_col(scenario_df)
