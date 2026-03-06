@@ -1114,7 +1114,11 @@ async def create_scenario(body: ScenarioCreate, db: AsyncSession = Depends(get_d
         dataset_id=body.dataset_id,
         rules=body.rules,
         color=body.color,
-        base_config=body.base_config.model_dump() if body.base_config else None,
+        base_config=(
+            body.base_config.model_dump() if hasattr(body.base_config, 'model_dump')
+            else body.base_config if isinstance(body.base_config, dict)
+            else None
+        ) if body.base_config else None,
     )
     db.add(scenario)
     await db.commit()
@@ -1155,7 +1159,12 @@ async def update_scenario(
     if body.color is not None:
         scenario.color = body.color
     if body.base_config is not None:
-        scenario.base_config = body.base_config.model_dump()
+        if hasattr(body.base_config, 'model_dump'):
+            scenario.base_config = body.base_config.model_dump()
+        elif isinstance(body.base_config, dict):
+            scenario.base_config = body.base_config
+        else:
+            scenario.base_config = None
 
     await db.commit()
     await db.refresh(scenario)
@@ -1232,7 +1241,7 @@ async def compute_scenario(
     }
 
     try:
-        scenario_df = scenario_svc.build_scenario_data(
+        scenario_df = scenario_svc.compute_scenario_output(
             baseline_df, scenario.rules, scenario.base_config,
             all_scenarios, value_col,
         )

@@ -143,23 +143,13 @@ class BaselineResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 class ScenarioBaseConfig(BaseModel):
-    """Baseline + projection configuration for a scenario."""
-    # What is the starting data?
+    """Baseline configuration — what data the scenario starts from."""
+    model_config = {"extra": "ignore"}
+
     source: Literal["actuals", "scenario"] = "actuals"
-    source_scenario_id: str | None = None     # when source="scenario"
-    # Which periods form the baseline?
-    period_from: str | None = None            # e.g. "2024-01"
-    period_to: str | None = None              # e.g. "2024-12"
-    # Projection into future periods
-    project_to_year: int | None = None        # e.g. 2026
-    projection_method: Literal["copy", "average", "none"] = "none"
-    growth_pct: float = 0.0
-    # Legacy projection fields (kept for backwards compat with old format)
-    method: str | None = None                 # old: "copy_year"/"average"/"last_n_months"/"none"
-    source_year: int | None = None
-    target_year: int | None = None
-    last_n: int = 3
-    target_periods: list[str] = []
+    source_scenario_id: str | None = None   # when source="scenario"
+    period_from: str | None = None          # YYYY-MM
+    period_to: str | None = None            # YYYY-MM
 
 
 class ScenarioCreate(BaseModel):
