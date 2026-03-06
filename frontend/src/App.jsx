@@ -1564,6 +1564,7 @@ function ChatPanel({ baseline, scenarios, setScenarios, setActiveTab, datasetId 
     abortRef.current = abortCtrl;
     const pendingRules = [];
     let pendingBaseConfig = null;
+    let pendingExistingScenarioId = null;
 
     try {
       for await (const event of streamChat(msg, datasetId, history, abortCtrl.signal)) {
@@ -1577,21 +1578,39 @@ function ChatPanel({ baseline, scenarios, setScenarios, setActiveTab, datasetId 
           // Extract base_config from the rule (it's a scenario-level field)
           const { base_config, ...ruleWithoutBaseConfig } = event.rule;
           if (base_config) pendingBaseConfig = base_config;
+          if (event.scenario_id) pendingExistingScenarioId = event.scenario_id;
           pendingRules.push({ ...ruleWithoutBaseConfig, id: Date.now() + pendingRules.length });
         } else if (event.type === "done") {
           if (pendingRules.length) {
-            setScenarios(p => {
-              const color = SC_COLORS[p.length % SC_COLORS.length];
-              const name = `Scenario ${p.length + 1}`;
-              const payload = { name, dataset_id: datasetId, rules: pendingRules, color };
-              if (pendingBaseConfig) payload.base_config = pendingBaseConfig;
-              createScenario(payload).then(created => {
-                setScenarios(prev => [...prev, { id: created.id, name: created.name, rules: created.rules || pendingRules, color: created.color || color, base_config: created.base_config || null }]);
-              }).catch(() => {
-                setScenarios(prev => [...prev, { id: Date.now(), name, rules: pendingRules, color, base_config: pendingBaseConfig || null }]);
+            if (pendingExistingScenarioId) {
+              // Add rules to existing scenario
+              setScenarios(prev => {
+                const updated = prev.map(sc => {
+                  if (sc.id !== pendingExistingScenarioId) return sc;
+                  const newRules = [...sc.rules, ...pendingRules];
+                  const newConfig = pendingBaseConfig
+                    ? { ...(sc.base_config || {}), ...pendingBaseConfig }
+                    : sc.base_config;
+                  updateScenario(sc.id, { rules: newRules, base_config: newConfig }).catch(console.error);
+                  return { ...sc, rules: newRules, base_config: newConfig };
+                });
+                return updated;
               });
-              return p;
-            });
+            } else {
+              // Create new scenario
+              setScenarios(p => {
+                const color = SC_COLORS[p.length % SC_COLORS.length];
+                const name = `Scenario ${p.length + 1}`;
+                const payload = { name, dataset_id: datasetId, rules: pendingRules, color };
+                if (pendingBaseConfig) payload.base_config = pendingBaseConfig;
+                createScenario(payload).then(created => {
+                  setScenarios(prev => [...prev, { id: created.id, name: created.name, rules: created.rules || pendingRules, color: created.color || color, base_config: created.base_config || null }]);
+                }).catch(() => {
+                  setScenarios(prev => [...prev, { id: Date.now(), name, rules: pendingRules, color, base_config: pendingBaseConfig || null }]);
+                });
+                return p;
+              });
+            }
             setActiveTab("scenarios");
           }
           // Ensure placeholder has content

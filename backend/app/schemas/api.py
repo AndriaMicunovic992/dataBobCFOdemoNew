@@ -143,13 +143,23 @@ class BaselineResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 class ScenarioBaseConfig(BaseModel):
-    """Projection base configuration for future-period scenarios."""
-    method: Literal["copy_year", "average", "last_n_months", "none"] = "none"
-    source_year: int | None = None        # copy_year: year to copy from
-    target_year: int | None = None        # copy_year / average: year to project into
-    growth_pct: float = 0.0              # additional growth applied after copy/average
-    last_n: int = 3                      # last_n_months: how many trailing months to average
-    target_periods: list[str] = []       # explicit list of YYYY-MM periods to generate
+    """Baseline + projection configuration for a scenario."""
+    # What is the starting data?
+    source: Literal["actuals", "scenario"] = "actuals"
+    source_scenario_id: str | None = None     # when source="scenario"
+    # Which periods form the baseline?
+    period_from: str | None = None            # e.g. "2024-01"
+    period_to: str | None = None              # e.g. "2024-12"
+    # Projection into future periods
+    project_to_year: int | None = None        # e.g. 2026
+    projection_method: Literal["copy", "average", "none"] = "none"
+    growth_pct: float = 0.0
+    # Legacy projection fields (kept for backwards compat with old format)
+    method: str | None = None                 # old: "copy_year"/"average"/"last_n_months"/"none"
+    source_year: int | None = None
+    target_year: int | None = None
+    last_n: int = 3
+    target_periods: list[str] = []
 
 
 class ScenarioCreate(BaseModel):
