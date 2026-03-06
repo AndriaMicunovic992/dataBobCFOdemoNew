@@ -120,6 +120,22 @@ Additionally, for each table you must provide:
    - op "contains": {"value": "substring"}
    - op "starts_with": {"value": "prefix"}
 
+10. FINANCIAL STRUCTURE AWARENESS: When analyzing financial data, identify the P&L (profit and
+    loss) structure. In your scenario_hints output, be VERY SPECIFIC about which column and value
+    corresponds to each P&L concept (revenue, COGS, personnel costs, operating expenses, etc.).
+
+    Always include this warning verbatim in scenario_hints:
+    "WARNING: Never apply a scenario rule without a filter. Every rule must target a specific
+    category using a grouping column. Applying a multiplier to all rows changes the ENTIRE P&L —
+    revenue, costs, and expenses simultaneously — which is almost never the user's intent.
+    When the user says 'increase revenue by 10%', ONLY rows matching the revenue category should
+    be affected."
+
+    After the warning, map each P&L concept to the actual column and value found in this dataset,
+    for example: "Revenue: [column] = '[value]'. COGS/Material costs: [column] = '[value]'.
+    Personnel costs: [column] = '[value]'. Operating expenses: [column] = '[values]'."
+    Use the actual column names and sample values from the data — do not use placeholder names.
+
 Respond ONLY with a single JSON object — no markdown fences, no extra text.
 """
 
