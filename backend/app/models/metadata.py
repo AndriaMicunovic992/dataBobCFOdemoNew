@@ -35,11 +35,17 @@ class Dataset(Base):
         DateTime(timezone=True), onupdate=func.now(), nullable=True
     )
 
+    # Semantic layer: structured agent summary injected into scenario agent prompts
+    agent_context_notes: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
     columns: Mapped[list["DatasetColumn"]] = relationship(
         "DatasetColumn", back_populates="dataset", cascade="all, delete-orphan"
     )
     scenarios: Mapped[list["Scenario"]] = relationship(
         "Scenario", back_populates="dataset", cascade="all, delete-orphan"
+    )
+    semantic_columns: Mapped[list["SemanticColumn"]] = relationship(
+        "SemanticColumn", back_populates="dataset", cascade="all, delete-orphan"
     )
     source_relationships: Mapped[list["DatasetRelationship"]] = relationship(
         "DatasetRelationship",
@@ -133,3 +139,61 @@ class Scenario(Base):
     )
 
     dataset: Mapped["Dataset"] = relationship("Dataset", back_populates="scenarios")
+
+
+class SemanticColumn(Base):
+    """Stores descriptions, synonyms, and agent-generated context for each column."""
+
+    __tablename__ = "semantic_columns"
+    __table_args__ = (
+        UniqueConstraint("dataset_id", "column_name", name="uq_semantic_col"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String, primary_key=True, server_default=func.gen_random_uuid().cast(String)
+    )
+    dataset_id: Mapped[str] = mapped_column(
+        String, ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False
+    )
+    column_name: Mapped[str] = mapped_column(String, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    synonyms: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    value_source: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), onupdate=func.now(), nullable=True
+    )
+
+    dataset: Mapped["Dataset"] = relationship("Dataset", back_populates="semantic_columns")
+    labels: Mapped[list["SemanticValueLabel"]] = relationship(
+        "SemanticValueLabel", back_populates="semantic_column", cascade="all, delete-orphan"
+    )
+
+
+class SemanticValueLabel(Base):
+    """Maps raw column values to human-readable labels (e.g. 400100 → 'Personnel Costs')."""
+
+    __tablename__ = "semantic_value_labels"
+    __table_args__ = (
+        UniqueConstraint("semantic_column_id", "raw_value", name="uq_semantic_label"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String, primary_key=True, server_default=func.gen_random_uuid().cast(String)
+    )
+    semantic_column_id: Mapped[str] = mapped_column(
+        String, ForeignKey("semantic_columns.id", ondelete="CASCADE"), nullable=False
+    )
+    raw_value: Mapped[str] = mapped_column(String, nullable=False)
+    display_label: Mapped[str] = mapped_column(String, nullable=False)
+    category: Mapped[str | None] = mapped_column(String, nullable=True)
+    sort_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    semantic_column: Mapped["SemanticColumn"] = relationship(
+        "SemanticColumn", back_populates="labels"
+    )

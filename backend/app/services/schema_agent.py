@@ -45,6 +45,54 @@ You work with German and English financial data. Common patterns:
 - Beleg / BelegNr → voucher / document number (role: key)
 - Gesellschaft / GesNr → company code (role: key)
 
+Additionally, for each table you must provide:
+
+7. agent_context_notes: A structured summary that will be given to a separate
+   Scenario Planning AI agent. Write it as if briefing a new financial analyst:
+   - summary: 2-3 sentences describing what this table contains
+   - key_dimensions: which columns are the main grouping dimensions and what they represent
+   - time_range: what period the data covers (based on sample values)
+   - measure_interpretation: what the numeric columns mean (are negatives expenses? is it in EUR/USD?)
+   - domain: what domain this data belongs to (financial, sales, hr, etc.)
+   - existing_groupings: CRITICAL — look at dimension tables for columns that ALREADY
+     provide category/group/hierarchy information. These are far more reliable than
+     AI-generated classifications. Examples of what to look for:
+     * A "reporting_h2" or "account_group" or "kostengruppe" column in the accounts table
+       that groups accounts into categories like "Personnel", "Materials", "Revenue"
+     * A "department_group" column in a departments table
+     * A "product_line" or "item_category" column in a products table
+     When you find these, document them clearly:
+     "The accounts dimension has a 'reporting_h2' column that groups accounts into
+      cost categories. Values include: Personalaufwand (personnel), Warenaufwand (materials),
+      Abschreibungen (depreciation). Use this column — NOT account codes — when the user
+      asks about cost categories or types of expenses."
+   - scenario_hints: specific instructions for scenario planning. Reference the
+     existing_groupings above. Examples:
+     "To increase personnel costs by 10%, filter on reporting_h2 = 'Personalaufwand'.
+      Do NOT filter on account code ranges — use the existing category column instead."
+     "Revenue is reporting_h2 = 'Umsatzerlöse'."
+     The Scenario Agent should ALWAYS prefer filtering on existing grouping columns
+     over raw ID/code columns when the user speaks in business terms.
+
+8. value_label_suggestions: IMPORTANT — you only see a sample of values, NOT all values.
+   DO NOT try to label every possible value. Instead:
+
+   a) For columns that clearly link to another table (e.g. hauptkonto likely joins
+      to a chart of accounts): suggest NO individual labels. The system will auto-populate
+      complete labels from the dimension table when the relationship is created.
+      Instead, note in agent_context_notes which column likely has a dimension table.
+
+   b) For dimension tables that ALREADY have grouping/category columns: DO NOT suggest
+      reclassification transformations that duplicate this. Instead, document the existing
+      grouping in agent_context_notes.existing_groupings so the Scenario Agent uses it directly.
+
+   c) For columns with a SMALL number of values (< 20) where all/most values are visible
+      in the samples: suggest labels for the values you can see.
+
+   d) Only suggest reclassification transformations when NO existing grouping column covers
+      the need. For example: if there's no cost category column in any dimension table,
+      THEN suggest creating one from account code patterns.
+
 Respond ONLY with a single JSON object — no markdown fences, no extra text.
 """
 
@@ -74,6 +122,40 @@ _RESPONSE_SCHEMA = {
                                 },
                                 "suggested_display_name": {"type": "string"},
                                 "reasoning": {"type": "string"},
+                            },
+                        },
+                    },
+                    "agent_context_notes": {
+                        "type": "object",
+                        "properties": {
+                            "summary": {"type": "string"},
+                            "key_dimensions": {"type": "array", "items": {"type": "string"}},
+                            "time_range": {"type": "string"},
+                            "measure_interpretation": {"type": "string"},
+                            "domain": {"type": "string"},
+                            "existing_groupings": {"type": "string"},
+                            "scenario_hints": {"type": "string"},
+                        },
+                    },
+                    "value_label_suggestions": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["column_name", "labels"],
+                            "properties": {
+                                "column_name": {"type": "string"},
+                                "labels": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "required": ["raw_value", "display_label"],
+                                        "properties": {
+                                            "raw_value": {"type": "string"},
+                                            "display_label": {"type": "string"},
+                                            "category": {"type": "string"},
+                                        },
+                                    },
+                                },
                             },
                         },
                     },
