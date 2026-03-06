@@ -93,6 +93,25 @@ Additionally, for each table you must provide:
       the need. For example: if there's no cost category column in any dimension table,
       THEN suggest creating one from account code patterns.
 
+9. suggested_transformations: ONLY suggest when dimension tables lack a grouping column.
+   If reporting_h2 / account_group / kostengruppe already exists: do NOT suggest a
+   reclassification — document it in existing_groupings instead.
+
+   When you DO suggest a transformation, provide the full JSON definition:
+   - reclassification: must include source_column, output_column, output_type, and rules
+     (each rule has a "condition" with op + values/value, and a "result" string;
+      last rule has "default" key instead of "condition")
+   - calculated_column: must include output_column, output_type, and expression tree
+     (each node is {"op": "...", "left": ..., "right": ...} or {"column": "name"} or {"literal": 1.0})
+   - concat: must include columns (list), output_column, output_type, separator
+
+   Rules for reclassification conditions:
+   - op "between": {"values": ["400000", "499999"]} — works on string representation
+   - op "in": {"values": ["A", "B", "C"]}
+   - op "equals": {"value": "X"}
+   - op "contains": {"value": "substring"}
+   - op "starts_with": {"value": "prefix"}
+
 Respond ONLY with a single JSON object — no markdown fences, no extra text.
 """
 
@@ -156,6 +175,29 @@ _RESPONSE_SCHEMA = {
                                         },
                                     },
                                 },
+                            },
+                        },
+                    },
+                    "suggested_transformations": {
+                        "type": "array",
+                        "description": (
+                            "Only suggest when NO existing grouping column in a dimension table "
+                            "already covers the need. If reporting_h2 / account_group etc already "
+                            "exists, do NOT suggest a reclassification — document it in "
+                            "existing_groupings instead."
+                        ),
+                        "items": {
+                            "type": "object",
+                            "required": ["name", "step_type", "definition", "reason"],
+                            "properties": {
+                                "name": {"type": "string"},
+                                "description": {"type": "string"},
+                                "step_type": {
+                                    "type": "string",
+                                    "enum": ["reclassification", "calculated_column", "concat"],
+                                },
+                                "definition": {"type": "object"},
+                                "reason": {"type": "string"},
                             },
                         },
                     },

@@ -5,6 +5,7 @@ from app.models.metadata import (
     Scenario,
     SemanticColumn,
     SemanticValueLabel,
+    TransformationStep,
 )
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "Scenario",
     "SemanticColumn",
     "SemanticValueLabel",
+    "TransformationStep",
 ]

@@ -47,6 +47,10 @@ class Dataset(Base):
     semantic_columns: Mapped[list["SemanticColumn"]] = relationship(
         "SemanticColumn", back_populates="dataset", cascade="all, delete-orphan"
     )
+    transformations: Mapped[list["TransformationStep"]] = relationship(
+        "TransformationStep", back_populates="dataset", cascade="all, delete-orphan",
+        order_by="TransformationStep.step_order",
+    )
     source_relationships: Mapped[list["DatasetRelationship"]] = relationship(
         "DatasetRelationship",
         back_populates="source_dataset",
@@ -197,3 +201,32 @@ class SemanticValueLabel(Base):
     semantic_column: Mapped["SemanticColumn"] = relationship(
         "SemanticColumn", back_populates="labels"
     )
+
+
+class TransformationStep(Base):
+    """A replayable, auditable data transformation (reclassification, calculated column, etc.)."""
+
+    __tablename__ = "transformation_steps"
+
+    id: Mapped[str] = mapped_column(
+        String, primary_key=True, server_default=func.gen_random_uuid().cast(String)
+    )
+    dataset_id: Mapped[str] = mapped_column(
+        String, ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False
+    )
+    step_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    step_type: Mapped[str] = mapped_column(String, nullable=False)  # reclassification | calculated_column | rename | concat
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    definition: Mapped[dict] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending")  # pending | approved | applied | rejected
+    created_by: Mapped[str] = mapped_column(String, nullable=False, default="user")  # user | ai_agent
+    ai_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), onupdate=func.now(), nullable=True
+    )
+
+    dataset: Mapped["Dataset"] = relationship("Dataset", back_populates="transformations")
