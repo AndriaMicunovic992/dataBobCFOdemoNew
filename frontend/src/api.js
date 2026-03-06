@@ -110,6 +110,16 @@ export async function deleteScenario(id) {
   return req(`/scenarios/${id}`, { method: 'DELETE' })
 }
 
+/** Compute a scenario server-side. Returns columns, rows (including projections). */
+export async function computeScenario(scenarioId, factDatasetId, relationshipIds = [], valueColumn = null) {
+  const body = {
+    fact_dataset_id: factDatasetId,
+    relationships: relationshipIds.map(id => ({ rel_id: id })),
+  }
+  if (valueColumn) body.value_column = valueColumn
+  return req(`/scenarios/${scenarioId}/compute`, { method: 'POST', ...json(body) })
+}
+
 // ── Chat (SSE streaming) ─────────────────────────────────────────────────────
 
 /**
