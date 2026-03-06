@@ -283,6 +283,7 @@ async def execute_tool(
     tool_input: dict,
     table_name: str,
     dataset_id: str = "",
+    baseline_df: Any = None,
 ) -> dict[str, Any]:
     """Execute a tool call and return the result dict.
 
@@ -292,16 +293,18 @@ async def execute_tool(
     logger.info("Executing tool %s with input %s", tool_name, tool_input)
 
     if tool_name == "query_data":
-        return _tool_query_data(tool_input, table_name)
+        return _tool_query_data(tool_input, table_name, baseline_df=baseline_df)
     elif tool_name == "create_scenario_rule":
-        return _tool_create_scenario_rule(tool_input, table_name)
+        return _tool_create_scenario_rule(tool_input, table_name, baseline_df=baseline_df)
     elif tool_name == "list_dimension_values":
-        return _tool_list_dimension_values(tool_input, table_name, dataset_id=dataset_id)
+        return _tool_list_dimension_values(
+            tool_input, table_name, dataset_id=dataset_id, baseline_df=baseline_df
+        )
     else:
         return {"error": f"Unknown tool: {tool_name}"}
 
 
-def _tool_query_data(inp: dict, table_name: str) -> dict:
+def _tool_query_data(inp: dict, table_name: str, baseline_df: Any = None) -> dict:
     """Run a grouped aggregation query and return ≤ 50 rows."""
     import polars as pl
 
@@ -310,7 +313,11 @@ def _tool_query_data(inp: dict, table_name: str) -> dict:
     agg: str = inp.get("aggregation", "sum")
     filters: dict = inp.get("filters") or {}
 
-    df = storage_svc.read_dataset(sync_engine, table_name)
+    # Use the enriched baseline (with dimension columns) when available
+    if baseline_df is not None:
+        df = baseline_df
+    else:
+        df = storage_svc.read_dataset(sync_engine, table_name)
 
     # Apply filters
     for col_name, values in filters.items():
@@ -352,7 +359,7 @@ def _tool_query_data(inp: dict, table_name: str) -> dict:
     }
 
 
-def _tool_create_scenario_rule(inp: dict, table_name: str) -> dict:
+def _tool_create_scenario_rule(inp: dict, table_name: str, baseline_df: Any = None) -> dict:
     """Build a scenario rule dict and compute an impact preview."""
     import polars as pl
 
@@ -376,7 +383,11 @@ def _tool_create_scenario_rule(inp: dict, table_name: str) -> dict:
 
     # Impact preview: count affected rows and estimate delta
     try:
-        df = storage_svc.read_dataset(sync_engine, table_name)
+        # Use baseline (with dimension columns) when available
+        if baseline_df is not None:
+            df = baseline_df
+        else:
+            df = storage_svc.read_dataset(sync_engine, table_name)
 
         mask = pl.lit(True)
         for col_name, values in rule.get("filters", {}).items():
@@ -414,7 +425,9 @@ def _tool_create_scenario_rule(inp: dict, table_name: str) -> dict:
     return rule
 
 
-def _tool_list_dimension_values(inp: dict, table_name: str, dataset_id: str = "") -> dict:
+def _tool_list_dimension_values(
+    inp: dict, table_name: str, dataset_id: str = "", baseline_df: Any = None
+) -> dict:
     """Return up to 100 unique values for a column, with semantic labels when available."""
     import polars as pl
     from sqlalchemy import text
@@ -422,7 +435,11 @@ def _tool_list_dimension_values(inp: dict, table_name: str, dataset_id: str = ""
     col_name: str = inp["column_name"]
     search: str | None = inp.get("search")
 
-    df = storage_svc.read_dataset(sync_engine, table_name, columns=[col_name])
+    # Use baseline (with dimension columns) when the column exists there
+    if baseline_df is not None and col_name in baseline_df.columns:
+        df = baseline_df.select([col_name])
+    else:
+        df = storage_svc.read_dataset(sync_engine, table_name, columns=[col_name])
 
     if col_name not in df.columns:
         return {"error": f"Column '{col_name}' not found"}
@@ -600,6 +617,7 @@ async def stream_chat(
     history: list[dict],
     context: str = "",
     schema_info: dict | None = None,  # kept for backwards-compat; prefer context
+    baseline_df: Any = None,  # pl.DataFrame | None — enriched fact+dim join
 ) -> AsyncGenerator[str, None]:
     """Async generator that yields SSE events for one chat turn.
 
@@ -713,7 +731,10 @@ async def stream_chat(
                     "input": tu["input"],
                 })
 
-                result = await execute_tool(tu["name"], tu["input"], table_name, dataset_id=dataset_id)
+                result = await execute_tool(
+                    tu["name"], tu["input"], table_name,
+                    dataset_id=dataset_id, baseline_df=baseline_df,
+                )
 
                 yield _sse_event({
                     "type": "tool_result",
