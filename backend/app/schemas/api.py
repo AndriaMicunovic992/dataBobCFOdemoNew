@@ -188,3 +188,45 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     message: str
     suggested_query: QueryRequest | None = None
+
+
+# ---------------------------------------------------------------------------
+# Semantic layer
+# ---------------------------------------------------------------------------
+
+class SemanticValueLabelResponse(BaseModel):
+    id: str
+    raw_value: str
+    display_label: str
+    category: str | None = None
+    sort_order: int | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class SemanticColumnResponse(BaseModel):
+    id: str
+    dataset_id: str
+    column_name: str
+    description: str | None = None
+    synonyms: list[str] = []
+    value_source: str | None = None
+    labels: list[SemanticValueLabelResponse] = []
+
+    model_config = {"from_attributes": True}
+
+
+class SemanticLayerResponse(BaseModel):
+    dataset_id: str
+    columns: list[SemanticColumnResponse]
+    agent_context_notes: dict[str, Any] | None = None
+
+
+class SemanticColumnUpdate(BaseModel):
+    description: str | None = None
+    synonyms: list[str] | None = None
+
+
+class SemanticLabelBulkCreate(BaseModel):
+    column_name: str
+    labels: list[dict[str, Any]]  # [{raw_value, display_label, category?}]

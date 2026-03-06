@@ -245,6 +245,7 @@ async def execute_tool(
     tool_name: str,
     tool_input: dict,
     table_name: str,
+    dataset_id: str = "",
 ) -> dict[str, Any]:
     """Execute a tool call and return the result dict.
 
@@ -258,7 +259,7 @@ async def execute_tool(
     elif tool_name == "create_scenario_rule":
         return _tool_create_scenario_rule(tool_input, table_name)
     elif tool_name == "list_dimension_values":
-        return _tool_list_dimension_values(tool_input, table_name)
+        return _tool_list_dimension_values(tool_input, table_name, dataset_id=dataset_id)
     else:
         return {"error": f"Unknown tool: {tool_name}"}
 
@@ -374,9 +375,10 @@ def _tool_create_scenario_rule(inp: dict, table_name: str) -> dict:
     return rule
 
 
-def _tool_list_dimension_values(inp: dict, table_name: str) -> dict:
-    """Return up to 100 unique values for a column."""
+def _tool_list_dimension_values(inp: dict, table_name: str, dataset_id: str = "") -> dict:
+    """Return up to 100 unique values for a column, with semantic labels when available."""
     import polars as pl
+    from sqlalchemy import text
 
     col_name: str = inp["column_name"]
     search: str | None = inp.get("search")
@@ -392,12 +394,42 @@ def _tool_list_dimension_values(inp: dict, table_name: str) -> dict:
         search_lower = search.lower()
         series = series.filter(series.cast(pl.Utf8).str.to_lowercase().str.contains(search_lower))
 
-    values = series.head(100).to_list()
+    raw_values = series.head(100).to_list()
+
+    # Load semantic labels for these values if dataset_id is known
+    label_map: dict[str, dict] = {}
+    if dataset_id:
+        try:
+            with sync_engine.connect() as conn:
+                rows = conn.execute(
+                    text("""
+                        SELECT svl.raw_value, svl.display_label, svl.category
+                        FROM semantic_value_labels svl
+                        JOIN semantic_columns sc ON sc.id = svl.semantic_column_id
+                        WHERE sc.dataset_id = :ds_id AND sc.column_name = :col_name
+                    """),
+                    {"ds_id": dataset_id, "col_name": col_name},
+                ).fetchall()
+                for row in rows:
+                    label_map[str(row[0])] = {"label": row[1], "category": row[2]}
+        except Exception as exc:
+            logger.warning("Failed to load semantic labels for %s: %s", col_name, exc)
+
+    values_with_labels = []
+    for v in raw_values:
+        raw_str = str(_safe(v))
+        entry: dict[str, Any] = {"value": _safe(v)}
+        if raw_str in label_map:
+            entry["label"] = label_map[raw_str]["label"]
+            if label_map[raw_str]["category"]:
+                entry["category"] = label_map[raw_str]["category"]
+        values_with_labels.append(entry)
+
     return {
         "column_name": col_name,
-        "values": [_safe(v) for v in values],
+        "values": values_with_labels,
         "total_unique": df[col_name].n_unique(),
-        "showing": len(values),
+        "showing": len(raw_values),
     }
 
 
@@ -468,6 +500,44 @@ def load_schema_info(dataset) -> dict:
 # SSE streaming chat
 # ---------------------------------------------------------------------------
 
+def _build_system_prompt_from_context(context: str) -> str:
+    """Build the chat system prompt incorporating the rich semantic context."""
+    return (
+        "You are a data analyst assistant for DataBobIQ. You help users explore data, "
+        "build what-if scenarios, and understand their numbers. Be concise and direct.\n"
+        "Always use the provided tools to query actual data — never guess numbers.\n\n"
+        f"{context}\n\n"
+        "<instructions>\n"
+        "- When the user asks about their data, use query_data with the correct column names.\n"
+        "- When you need to filter by a dimension, look at the value labels in the context above.\n"
+        "  For example, if the user says 'personnel costs', find which column values correspond\n"
+        "  to that from the labels/categories, then use those raw values in your filter.\n"
+        "- IMPORTANT: If existing_groupings are documented, ALWAYS prefer filtering on those\n"
+        "  grouping columns (e.g. reporting_h2, account_group) rather than raw ID/code ranges.\n"
+        "- When the user asks 'what if', create a scenario rule with create_scenario_rule.\n"
+        "- When you need to verify values, use list_dimension_values.\n"
+        "- If the data context includes scenario_hints, follow those instructions.\n"
+        "- Format numbers with thousand separators.\n"
+        "- If the data appears to be German, respond in German when the user writes in German.\n"
+        "</instructions>"
+    )
+
+
+def _resolve_table_name(dataset_id: str) -> str:
+    """Resolve the dynamic table name for a dataset_id using the sync engine."""
+    from sqlalchemy import text
+    try:
+        with sync_engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT table_name FROM datasets WHERE id = :id AND status != 'deleted'"),
+                {"id": dataset_id},
+            ).fetchone()
+            return row[0] if row else ""
+    except Exception as exc:
+        logger.warning("_resolve_table_name failed: %s", exc)
+        return ""
+
+
 def _sse_event(data: dict) -> str:
     """Format a single SSE event line."""
     return f"data: {json.dumps(data, default=str)}\n\n"
@@ -477,7 +547,8 @@ async def stream_chat(
     message: str,
     dataset_id: str,
     history: list[dict],
-    schema_info: dict,
+    context: str = "",
+    schema_info: dict | None = None,  # kept for backwards-compat; prefer context
 ) -> AsyncGenerator[str, None]:
     """Async generator that yields SSE events for one chat turn.
 
@@ -497,8 +568,21 @@ async def stream_chat(
         return
 
     client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY_CHAT)
-    system_prompt = build_system_prompt(schema_info)
-    table_name = schema_info["table_name"]
+
+    # Build system prompt: prefer rich semantic context; fall back to legacy schema_info
+    if context:
+        system_prompt = _build_system_prompt_from_context(context)
+        table_name = schema_info["table_name"] if schema_info else ""
+    elif schema_info:
+        system_prompt = build_system_prompt(schema_info)
+        table_name = schema_info["table_name"]
+    else:
+        system_prompt = "You are a data analyst assistant for DataBobIQ."
+        table_name = ""
+
+    # Resolve table_name from dataset_id if not provided via schema_info
+    if not table_name and dataset_id:
+        table_name = _resolve_table_name(dataset_id)
 
     # Build messages array from history + new user message
     messages: list[dict] = []
@@ -578,7 +662,7 @@ async def stream_chat(
                     "input": tu["input"],
                 })
 
-                result = await execute_tool(tu["name"], tu["input"], table_name)
+                result = await execute_tool(tu["name"], tu["input"], table_name, dataset_id=dataset_id)
 
                 yield _sse_event({
                     "type": "tool_result",
@@ -643,7 +727,7 @@ async def chat_with_data(dataset_id: str, message: str, history: list[dict]) -> 
     collected_text = ""
     last_rule = None
 
-    async for event_str in stream_chat(message, dataset_id, history, schema_info):
+    async for event_str in stream_chat(message, dataset_id, history, schema_info=schema_info):
         # Parse the SSE line
         if not event_str.startswith("data: "):
             continue

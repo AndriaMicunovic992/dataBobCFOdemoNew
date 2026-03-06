@@ -23,7 +23,7 @@ from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.database import get_db, sync_engine
-from app.models.metadata import Dataset, DatasetColumn, DatasetRelationship, Scenario
+from app.models.metadata import Dataset, DatasetColumn, DatasetRelationship, Scenario, SemanticColumn, SemanticValueLabel
 from app.schemas.api import (
     BaselineRequest,
     BaselineResponse,
@@ -43,6 +43,10 @@ from app.schemas.api import (
     ScenarioResponse,
     ScenarioUpdate,
     SchemaResponse,
+    SemanticColumnResponse,
+    SemanticColumnUpdate,
+    SemanticLabelBulkCreate,
+    SemanticLayerResponse,
 )
 from app.services import calendar_svc
 from app.services import parser as parser_svc
@@ -242,6 +246,119 @@ async def _build_baseline_df(
 
 
 
+async def _auto_populate_labels_from_relationship(
+    db: AsyncSession, rel: DatasetRelationship
+) -> None:
+    """Auto-populate SemanticValueLabel rows from a dimension table.
+
+    When fact.key_col → dim.key_col and the dimension also has a text
+    attribute column (e.g. 'bezeichnung', 'name'), we create value labels
+    so `400100` maps to 'Personnel Costs' in the semantic layer.
+    """
+    src_ds_r = await db.execute(
+        select(Dataset).where(Dataset.id == rel.source_dataset_id).options(selectinload(Dataset.columns))
+    )
+    tgt_ds_r = await db.execute(
+        select(Dataset).where(Dataset.id == rel.target_dataset_id).options(selectinload(Dataset.columns))
+    )
+    src = src_ds_r.scalar_one_or_none()
+    tgt = tgt_ds_r.scalar_one_or_none()
+    if not src or not tgt:
+        return
+
+    src_has_measures = any(c.column_role == "measure" for c in src.columns)
+    tgt_has_measures = any(c.column_role == "measure" for c in tgt.columns)
+
+    if src_has_measures and not tgt_has_measures:
+        fact_ds, fact_col = src, rel.source_column
+        dim_ds, dim_key = tgt, rel.target_column
+    elif tgt_has_measures and not src_has_measures:
+        fact_ds, fact_col = tgt, rel.target_column
+        dim_ds, dim_key = src, rel.source_column
+    else:
+        return  # can't determine fact/dimension
+
+    # Find the best descriptive text column in the dimension table
+    desc_candidates = [
+        c for c in dim_ds.columns
+        if c.column_role == "attribute" and c.data_type == "text"
+        and c.column_name != dim_key
+    ]
+    if not desc_candidates:
+        return
+
+    name_patterns = ["name", "bezeichnung", "description", "label", "text", "desc", "title"]
+    def _score(col: DatasetColumn) -> int:
+        for i, pat in enumerate(name_patterns):
+            if pat in col.column_name.lower():
+                return i
+        return 100
+
+    desc_candidates.sort(key=_score)
+    desc_col = desc_candidates[0]
+
+    try:
+        dim_df = storage_svc.read_dataset(
+            sync_engine, dim_ds.table_name, columns=[dim_key, desc_col.column_name]
+        )
+    except Exception as exc:
+        logger.warning("_auto_populate_labels: failed to read dim table %s: %s", dim_ds.table_name, exc)
+        return
+
+    if dim_df.is_empty():
+        return
+
+    # Create or get SemanticColumn for the fact column
+    existing_sc = await db.execute(
+        select(SemanticColumn).where(
+            SemanticColumn.dataset_id == fact_ds.id,
+            SemanticColumn.column_name == fact_col,
+        )
+    )
+    sem_col = existing_sc.scalar_one_or_none()
+    if not sem_col:
+        sem_col = SemanticColumn(
+            id=uuid.uuid4().hex,
+            dataset_id=fact_ds.id,
+            column_name=fact_col,
+            description=f"Links to {dim_ds.name}.{desc_col.column_name}",
+            synonyms=[],
+            value_source=f"{dim_ds.name}.{desc_col.column_name}",
+        )
+        db.add(sem_col)
+        await db.flush()
+
+    # Upsert value labels
+    label_count = 0
+    for row in dim_df.iter_rows(named=True):
+        raw = row.get(dim_key)
+        label = row.get(desc_col.column_name)
+        if raw is None or label is None:
+            continue
+        raw_str = str(raw)
+        existing_lbl = await db.execute(
+            select(SemanticValueLabel).where(
+                SemanticValueLabel.semantic_column_id == sem_col.id,
+                SemanticValueLabel.raw_value == raw_str,
+            )
+        )
+        if existing_lbl.scalar_one_or_none():
+            continue
+        db.add(SemanticValueLabel(
+            id=uuid.uuid4().hex,
+            semantic_column_id=sem_col.id,
+            raw_value=raw_str,
+            display_label=str(label),
+        ))
+        label_count += 1
+
+    await db.commit()
+    logger.info(
+        "Auto-populated %d value labels for %s.%s from %s.%s",
+        label_count, fact_ds.name, fact_col, dim_ds.name, desc_col.column_name,
+    )
+
+
 async def _run_agent_and_persist(dataset_id: str) -> None:
     """Background task: run schema agent and persist results."""
     from app.database import AsyncSessionLocal
@@ -327,6 +444,76 @@ async def _run_agent_and_persist(dataset_id: str) -> None:
                     "suggested_display_name": agent_col.get("suggested_display_name"),
                     "reasoning": agent_col.get("reasoning"),
                 }
+
+        # Persist agent_context_notes
+        if agent_table.get("agent_context_notes"):
+            dataset.agent_context_notes = agent_table["agent_context_notes"]
+
+        # Persist value_label_suggestions from agent
+        for label_suggestion in agent_table.get("value_label_suggestions", []):
+            col_name = label_suggestion.get("column_name")
+            labels = label_suggestion.get("labels", [])
+            if not col_name or not labels:
+                continue
+            existing_sc = await db.execute(
+                select(SemanticColumn).where(
+                    SemanticColumn.dataset_id == dataset.id,
+                    SemanticColumn.column_name == col_name,
+                )
+            )
+            sem_col = existing_sc.scalar_one_or_none()
+            if not sem_col:
+                sem_col = SemanticColumn(
+                    id=uuid.uuid4().hex,
+                    dataset_id=dataset.id,
+                    column_name=col_name,
+                    synonyms=[],
+                )
+                db.add(sem_col)
+                await db.flush()
+            for lbl in labels:
+                raw_str = str(lbl.get("raw_value", ""))
+                if not raw_str:
+                    continue
+                existing_lbl = await db.execute(
+                    select(SemanticValueLabel).where(
+                        SemanticValueLabel.semantic_column_id == sem_col.id,
+                        SemanticValueLabel.raw_value == raw_str,
+                    )
+                )
+                if existing_lbl.scalar_one_or_none():
+                    continue
+                db.add(SemanticValueLabel(
+                    id=uuid.uuid4().hex,
+                    semantic_column_id=sem_col.id,
+                    raw_value=raw_str,
+                    display_label=str(lbl.get("display_label", raw_str)),
+                    category=lbl.get("category"),
+                ))
+
+        # Also persist column descriptions from agent reasoning
+        for agent_col in agent_table.get("columns", []):
+            col_name = agent_col.get("column_name")
+            if not col_name or not agent_col.get("reasoning"):
+                continue
+            existing_sc = await db.execute(
+                select(SemanticColumn).where(
+                    SemanticColumn.dataset_id == dataset.id,
+                    SemanticColumn.column_name == col_name,
+                )
+            )
+            sem_col = existing_sc.scalar_one_or_none()
+            if sem_col:
+                if not sem_col.description:
+                    sem_col.description = agent_col["reasoning"]
+            else:
+                db.add(SemanticColumn(
+                    id=uuid.uuid4().hex,
+                    dataset_id=dataset.id,
+                    column_name=col_name,
+                    description=agent_col["reasoning"],
+                    synonyms=[],
+                ))
 
         await db.commit()
         logger.info("Schema agent analysis persisted for dataset %s", dataset_id)
@@ -444,22 +631,29 @@ async def upload_file(
     if len(sheet_dfs) > 1:
         detected_rels = parser_svc.detect_relationships(sheet_dfs)
         ds_by_name = {ds.name.split(" – ")[-1]: ds for ds in created_datasets}
+        new_rels: list[DatasetRelationship] = []
         for rel in detected_rels:
             src_ds = ds_by_name.get(rel["source"])
             tgt_ds = ds_by_name.get(rel["target"])
             if src_ds and tgt_ds:
-                db.add(
-                    DatasetRelationship(
-                        id=uuid.uuid4().hex,
-                        source_dataset_id=src_ds.id,
-                        target_dataset_id=tgt_ds.id,
-                        source_column=rel["source_col"],
-                        target_column=rel["target_col"],
-                        coverage_pct=rel.get("coverage"),
-                        overlap_count=rel.get("overlap"),
-                    )
+                new_rel = DatasetRelationship(
+                    id=uuid.uuid4().hex,
+                    source_dataset_id=src_ds.id,
+                    target_dataset_id=tgt_ds.id,
+                    source_column=rel["source_col"],
+                    target_column=rel["target_col"],
+                    coverage_pct=rel.get("coverage"),
+                    overlap_count=rel.get("overlap"),
                 )
+                db.add(new_rel)
+                new_rels.append(new_rel)
         await db.commit()
+        # Auto-populate semantic labels for detected relationships
+        for new_rel in new_rels:
+            try:
+                await _auto_populate_labels_from_relationship(db, new_rel)
+            except Exception as exc:
+                logger.warning("Auto-populate labels failed for upload rel %s: %s", new_rel.id, exc)
 
     # Reload with columns relationship populated; auto-link to calendar
     responses: list[DatasetResponse] = []
@@ -705,6 +899,13 @@ async def create_relationship(
     db.add(rel)
     await db.commit()
     await db.refresh(rel)
+
+    # Auto-populate semantic value labels from dimension table
+    try:
+        await _auto_populate_labels_from_relationship(db, rel)
+    except Exception as exc:
+        logger.warning("Auto-populate labels failed for rel %s: %s", rel.id, exc)
+
     return DatasetRelationshipResponse.model_validate(rel)
 
 
@@ -941,7 +1142,8 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
     - ``{"type": "done"}``
     - ``{"type": "error", "message": "..."}``
     """
-    from app.services.chat import load_schema_info, stream_chat
+    from app.services.chat import stream_chat
+    from app.services.ai_context import build_agent_context
 
     result = await db.execute(
         select(Dataset)
@@ -955,14 +1157,161 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
     if not settings.ANTHROPIC_API_KEY_CHAT:
         raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY_CHAT is not configured")
 
-    schema_info = load_schema_info(dataset)
+    # Load all related dataset IDs (fact + any joined dimensions via relationships)
+    all_rel_result = await db.execute(
+        select(DatasetRelationship).where(
+            (DatasetRelationship.source_dataset_id == dataset.id) |
+            (DatasetRelationship.target_dataset_id == dataset.id)
+        )
+    )
+    all_rels = all_rel_result.scalars().all()
+    related_ids = {dataset.id}
+    for r in all_rels:
+        related_ids.add(r.source_dataset_id)
+        related_ids.add(r.target_dataset_id)
+
+    context = await build_agent_context(list(related_ids), db)
 
     return StreamingResponse(
         stream_chat(
             message=request.message,
             dataset_id=request.dataset_id,
             history=request.conversation_history,
-            schema_info=schema_info,
+            context=context,
         ),
         media_type="text/event-stream",
     )
+
+
+# ---------------------------------------------------------------------------
+# Semantic layer endpoints
+# ---------------------------------------------------------------------------
+
+@router.get("/datasets/{dataset_id}/semantic", response_model=SemanticLayerResponse)
+async def get_semantic_layer(dataset_id: str, db: AsyncSession = Depends(get_db)):
+    """Return the full semantic layer for a dataset."""
+    result = await db.execute(
+        select(Dataset)
+        .where(Dataset.id == dataset_id, Dataset.status != "deleted")
+    )
+    dataset = result.scalar_one_or_none()
+    if dataset is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    sc_result = await db.execute(
+        select(SemanticColumn)
+        .where(SemanticColumn.dataset_id == dataset_id)
+        .options(selectinload(SemanticColumn.labels))
+    )
+    sem_cols = sc_result.scalars().all()
+
+    return SemanticLayerResponse(
+        dataset_id=dataset_id,
+        columns=[SemanticColumnResponse.model_validate(c) for c in sem_cols],
+        agent_context_notes=dataset.agent_context_notes,
+    )
+
+
+@router.put("/datasets/{dataset_id}/semantic/columns/{column_name}", response_model=SemanticColumnResponse)
+async def update_semantic_column(
+    dataset_id: str,
+    column_name: str,
+    body: SemanticColumnUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    """Update a semantic column's description and/or synonyms."""
+    result = await db.execute(
+        select(SemanticColumn)
+        .where(SemanticColumn.dataset_id == dataset_id, SemanticColumn.column_name == column_name)
+        .options(selectinload(SemanticColumn.labels))
+    )
+    sem_col = result.scalar_one_or_none()
+    if sem_col is None:
+        # Create it
+        sem_col = SemanticColumn(
+            id=uuid.uuid4().hex,
+            dataset_id=dataset_id,
+            column_name=column_name,
+            description=body.description,
+            synonyms=body.synonyms or [],
+        )
+        db.add(sem_col)
+    else:
+        if body.description is not None:
+            sem_col.description = body.description
+        if body.synonyms is not None:
+            sem_col.synonyms = body.synonyms
+    await db.commit()
+    await db.refresh(sem_col)
+    return SemanticColumnResponse.model_validate(sem_col)
+
+
+@router.post("/datasets/{dataset_id}/semantic/labels", response_model=SemanticColumnResponse)
+async def bulk_upsert_labels(
+    dataset_id: str,
+    body: SemanticLabelBulkCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    """Bulk upsert value labels for a column."""
+    result = await db.execute(
+        select(SemanticColumn)
+        .where(SemanticColumn.dataset_id == dataset_id, SemanticColumn.column_name == body.column_name)
+        .options(selectinload(SemanticColumn.labels))
+    )
+    sem_col = result.scalar_one_or_none()
+    if sem_col is None:
+        sem_col = SemanticColumn(
+            id=uuid.uuid4().hex,
+            dataset_id=dataset_id,
+            column_name=body.column_name,
+            synonyms=[],
+        )
+        db.add(sem_col)
+        await db.flush()
+
+    for lbl in body.labels:
+        raw_str = str(lbl.get("raw_value", ""))
+        if not raw_str:
+            continue
+        existing_lbl = await db.execute(
+            select(SemanticValueLabel).where(
+                SemanticValueLabel.semantic_column_id == sem_col.id,
+                SemanticValueLabel.raw_value == raw_str,
+            )
+        )
+        existing = existing_lbl.scalar_one_or_none()
+        if existing:
+            existing.display_label = str(lbl.get("display_label", raw_str))
+            if lbl.get("category") is not None:
+                existing.category = lbl["category"]
+        else:
+            db.add(SemanticValueLabel(
+                id=uuid.uuid4().hex,
+                semantic_column_id=sem_col.id,
+                raw_value=raw_str,
+                display_label=str(lbl.get("display_label", raw_str)),
+                category=lbl.get("category"),
+            ))
+
+    await db.commit()
+    await db.refresh(sem_col)
+    return SemanticColumnResponse.model_validate(sem_col)
+
+
+@router.delete("/datasets/{dataset_id}/semantic/labels/{label_id}", status_code=204)
+async def delete_semantic_label(
+    dataset_id: str,
+    label_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a single value label."""
+    result = await db.execute(
+        select(SemanticValueLabel)
+        .join(SemanticColumn, SemanticValueLabel.semantic_column_id == SemanticColumn.id)
+        .where(SemanticValueLabel.id == label_id, SemanticColumn.dataset_id == dataset_id)
+    )
+    lbl = result.scalar_one_or_none()
+    if lbl is None:
+        raise HTTPException(status_code=404, detail="Label not found")
+    await db.delete(lbl)
+    await db.commit()

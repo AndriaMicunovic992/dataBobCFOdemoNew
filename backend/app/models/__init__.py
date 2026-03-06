@@ -1,3 +1,17 @@
-from app.models.metadata import Dataset, DatasetColumn, DatasetRelationship, Scenario
+from app.models.metadata import (
+    Dataset,
+    DatasetColumn,
+    DatasetRelationship,
+    Scenario,
+    SemanticColumn,
+    SemanticValueLabel,
+)
 
-__all__ = ["Dataset", "DatasetColumn", "DatasetRelationship", "Scenario"]
+__all__ = [
+    "Dataset",
+    "DatasetColumn",
+    "DatasetRelationship",
+    "Scenario",
+    "SemanticColumn",
+    "SemanticValueLabel",
+]
