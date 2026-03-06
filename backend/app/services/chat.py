@@ -88,8 +88,8 @@ TOOLS = [
         "description": (
             "Create a what-if scenario rule.  Returns the rule object "
             "plus an impact preview (rows affected, estimated delta).  "
-            "Use this when the user asks 'what if costs increase by X%' "
-            "or 'add 100K to budget'."
+            "Use this when the user asks 'what if costs increase by X%', "
+            "'add 100K to budget', or 'project next year based on this year'."
         ),
         "input_schema": {
             "type": "object",
@@ -126,6 +126,43 @@ TOOLS = [
                 "periodTo": {
                     "type": "string",
                     "description": "End period (YYYY-MM or YYYY-MM-DD).  Optional.",
+                },
+                "base_config": {
+                    "type": "object",
+                    "description": (
+                        "Optional future-period projection configuration.  "
+                        "Use when the user wants to project actuals into a future year.  "
+                        "method: 'copy_year' (copy source_year rows to target_year), "
+                        "'average' (average actuals then project to target_periods), "
+                        "'last_n_months' (average last N months then project), 'none'."
+                    ),
+                    "properties": {
+                        "method": {
+                            "type": "string",
+                            "enum": ["copy_year", "average", "last_n_months", "none"],
+                        },
+                        "source_year": {
+                            "type": "integer",
+                            "description": "Year to copy from (copy_year method)",
+                        },
+                        "target_year": {
+                            "type": "integer",
+                            "description": "Year to project into",
+                        },
+                        "growth_pct": {
+                            "type": "number",
+                            "description": "Additional growth percentage on top of projection (e.g. 5 = +5%)",
+                        },
+                        "last_n": {
+                            "type": "integer",
+                            "description": "Number of trailing months to average (last_n_months method)",
+                        },
+                        "target_periods": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Explicit list of YYYY-MM target periods to generate",
+                        },
+                    },
                 },
             },
         },
@@ -334,6 +371,8 @@ def _tool_create_scenario_rule(inp: dict, table_name: str) -> dict:
         rule["periodFrom"] = inp["periodFrom"]
     if inp.get("periodTo"):
         rule["periodTo"] = inp["periodTo"]
+    if inp.get("base_config"):
+        rule["base_config"] = inp["base_config"]
 
     # Impact preview: count affected rows and estimate delta
     try:
@@ -515,6 +554,10 @@ def _build_system_prompt_from_context(context: str) -> str:
         "- IMPORTANT: If existing_groupings are documented, ALWAYS prefer filtering on those\n"
         "  grouping columns (e.g. reporting_h2, account_group) rather than raw ID/code ranges.\n"
         "- When the user asks 'what if', create a scenario rule with create_scenario_rule.\n"
+        "- When the user asks to project or forecast future periods (e.g. 'project 2025 based on 2024'),\n"
+        "  use create_scenario_rule with a base_config: set method='copy_year', source_year=2024,\n"
+        "  target_year=2025, growth_pct=<any requested growth %>.  For 'average last 3 months',\n"
+        "  use method='last_n_months', last_n=3, target_year=<requested year>.\n"
         "- When you need to verify values, use list_dimension_values.\n"
         "- If the data context includes scenario_hints, follow those instructions.\n"
         "- Format numbers with thousand separators.\n"

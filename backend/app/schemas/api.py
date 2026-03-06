@@ -142,17 +142,29 @@ class BaselineResponse(BaseModel):
 # Scenario
 # ---------------------------------------------------------------------------
 
+class ScenarioBaseConfig(BaseModel):
+    """Projection base configuration for future-period scenarios."""
+    method: Literal["copy_year", "average", "last_n_months", "none"] = "none"
+    source_year: int | None = None        # copy_year: year to copy from
+    target_year: int | None = None        # copy_year / average: year to project into
+    growth_pct: float = 0.0              # additional growth applied after copy/average
+    last_n: int = 3                      # last_n_months: how many trailing months to average
+    target_periods: list[str] = []       # explicit list of YYYY-MM periods to generate
+
+
 class ScenarioCreate(BaseModel):
     name: str
     dataset_id: str
     rules: list[dict[str, Any]] = []
     color: str | None = None
+    base_config: ScenarioBaseConfig | None = None
 
 
 class ScenarioUpdate(BaseModel):
     name: str | None = None
     rules: list[dict[str, Any]] | None = None
     color: str | None = None
+    base_config: ScenarioBaseConfig | None = None
 
 
 class ScenarioResponse(BaseModel):
@@ -161,6 +173,7 @@ class ScenarioResponse(BaseModel):
     dataset_id: str
     rules: list[dict[str, Any]]
     color: str | None = None
+    base_config: dict[str, Any] | None = None
     created_at: datetime
     updated_at: datetime | None = None
 

@@ -729,6 +729,51 @@ async def list_datasets(db: AsyncSession = Depends(get_db)):
     return [_schema_response(d) for d in result.scalars().all()]
 
 
+@router.get("/datasets/{dataset_id}/available-periods")
+async def get_available_periods(dataset_id: str, db: AsyncSession = Depends(get_db)):
+    """Return the sorted list of distinct period values for a dataset.
+
+    Useful for populating projection source/target year selectors in the UI.
+    Returns: {"periods": ["2024-01", ...], "years": ["2024", ...], "period_column": "period"}
+    """
+    result = await db.execute(
+        select(Dataset)
+        .where(Dataset.id == dataset_id, Dataset.status != "deleted")
+        .options(selectinload(Dataset.columns))
+    )
+    dataset = result.scalar_one_or_none()
+    if dataset is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    # Find a time-role column
+    time_cols = [c.column_name for c in dataset.columns if c.column_role == "time"]
+    period_candidates = list(scenario_svc._PERIOD_COLUMN_CANDIDATES)
+    period_col: str | None = None
+
+    # Prefer explicitly time-role column, fall back to name heuristic
+    for tc in time_cols:
+        period_col = tc
+        break
+    if not period_col:
+        col_names_lower = {c.column_name.lower(): c.column_name for c in dataset.columns}
+        for candidate in period_candidates:
+            if candidate in col_names_lower:
+                period_col = col_names_lower[candidate]
+                break
+
+    if not period_col:
+        return {"periods": [], "years": [], "period_column": None}
+
+    try:
+        df = storage_svc.read_dataset(sync_engine, dataset.table_name, columns=[period_col])
+        periods = sorted(df[period_col].cast(pl.Utf8).drop_nulls().unique().to_list())
+        years = sorted(set(p[:4] for p in periods if len(p) >= 4))
+        return {"periods": periods, "years": years, "period_column": period_col}
+    except Exception as exc:
+        logger.warning("Could not read periods for dataset %s: %s", dataset_id, exc)
+        return {"periods": [], "years": [], "period_column": None}
+
+
 @router.post("/datasets/baseline", response_model=BaselineResponse)
 async def build_baseline(body: BaselineRequest, db: AsyncSession = Depends(get_db)):
     """Build the enriched baseline by joining a fact table with dimension tables.
@@ -1023,6 +1068,7 @@ async def create_scenario(body: ScenarioCreate, db: AsyncSession = Depends(get_d
         dataset_id=body.dataset_id,
         rules=body.rules,
         color=body.color,
+        base_config=body.base_config.model_dump() if body.base_config else None,
     )
     db.add(scenario)
     await db.commit()
@@ -1062,6 +1108,8 @@ async def update_scenario(
         scenario.rules = body.rules
     if body.color is not None:
         scenario.color = body.color
+    if body.base_config is not None:
+        scenario.base_config = body.base_config.model_dump()
 
     await db.commit()
     await db.refresh(scenario)
@@ -1129,9 +1177,35 @@ async def compute_scenario(
         logger.info("compute_scenario: using %r as value_column", value_col)
 
     try:
-        scenario_df = scenario_svc.apply_rules(baseline_df, scenario.rules, value_col)
+        scenario_df = scenario_svc.apply_scenario_with_projection(
+            baseline_df,
+            scenario.rules,
+            scenario.base_config,
+            value_col,
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Rule application failed: {exc}") from exc
+
+    # Determine actual vs projected periods for the response
+    period_col = scenario_svc._find_period_col(scenario_df)
+    has_projection = "_data_source" in scenario_df.columns and "projected" in scenario_df["_data_source"].to_list()
+    actuals_periods: list[str] = []
+    projection_periods: list[str] = []
+    if period_col and "_data_source" in scenario_df.columns:
+        actuals_periods = sorted(
+            scenario_df.filter(pl.col("_data_source") == "actual")[period_col]
+            .cast(pl.Utf8).drop_nulls().unique().to_list()
+        )
+        projection_periods = sorted(
+            scenario_df.filter(pl.col("_data_source") == "projected")[period_col]
+            .cast(pl.Utf8).drop_nulls().unique().to_list()
+        )
+
+    # For baseline comparison, use only actual rows (matching original baseline_df)
+    baseline_for_variance = baseline_df
+    if "_data_source" in scenario_df.columns:
+        # actual baseline rows have _data_source="actual" in scenario_df
+        pass  # baseline_df already lacks _data_source column
 
     def _rows(df: pl.DataFrame) -> list[list]:
         return [[_json_safe(v) for v in row] for row in df.iter_rows()]
@@ -1143,6 +1217,9 @@ async def compute_scenario(
         "baseline": _rows(baseline_df),
         "scenario": _rows(scenario_df),
         "row_count": len(scenario_df),
+        "has_projection": has_projection,
+        "actuals_periods": actuals_periods,
+        "projection_periods": projection_periods,
     }
 
     if body.group_by:
