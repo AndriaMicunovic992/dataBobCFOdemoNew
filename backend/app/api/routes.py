@@ -23,7 +23,7 @@ from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.database import get_db, sync_engine
-from app.models.metadata import Dataset, DatasetColumn, DatasetRelationship, Scenario, SemanticColumn, SemanticValueLabel
+from app.models.metadata import Dataset, DatasetColumn, DatasetRelationship, Scenario, SemanticColumn, SemanticValueLabel, TransformationStep
 from app.schemas.api import (
     BaselineRequest,
     BaselineResponse,
@@ -47,6 +47,10 @@ from app.schemas.api import (
     SemanticColumnUpdate,
     SemanticLabelBulkCreate,
     SemanticLayerResponse,
+    TransformationStepCreate,
+    TransformationStepResponse,
+    TransformationPreviewResponse,
+    TransformationSuggestRequest,
 )
 from app.services import calendar_svc
 from app.services import parser as parser_svc
@@ -405,7 +409,7 @@ async def _run_agent_and_persist(dataset_id: str) -> None:
 
         try:
             agent_result = await asyncio.wait_for(
-                schema_agent.analyze_schema(tables_payload), timeout=90
+                schema_agent.analyze_schema(tables_payload), timeout=300
             )
         except asyncio.TimeoutError:
             logger.warning("Schema agent timed out for dataset %s", dataset_id)
@@ -514,6 +518,37 @@ async def _run_agent_and_persist(dataset_id: str) -> None:
                     description=agent_col["reasoning"],
                     synonyms=[],
                 ))
+
+        # Persist AI-suggested transformations (only when no existing grouping column covers the need)
+        suggested_transforms = agent_table.get("suggested_transformations", [])
+        if suggested_transforms:
+            # Get current step_order max for this dataset
+            existing_steps = await db.execute(
+                select(TransformationStep).where(TransformationStep.dataset_id == dataset.id)
+            )
+            current_steps = existing_steps.scalars().all()
+            next_order = (max((s.step_order for s in current_steps), default=-1) + 1) if current_steps else 0
+
+            for i, sug in enumerate(suggested_transforms):
+                if not sug.get("definition") or not sug.get("name"):
+                    continue
+                defn = sug["definition"]
+                # Ensure step_type is in the definition
+                if "step_type" not in defn:
+                    defn["step_type"] = sug.get("step_type", "reclassification")
+                db.add(TransformationStep(
+                    id=uuid.uuid4().hex,
+                    dataset_id=dataset.id,
+                    step_order=next_order + i,
+                    step_type=sug.get("step_type", "reclassification"),
+                    name=sug["name"],
+                    description=sug.get("description"),
+                    definition=defn,
+                    status="pending",
+                    created_by="ai_agent",
+                    ai_prompt=sug.get("reason"),
+                ))
+            logger.info("Created %d pending transformation suggestions for dataset %s", len(suggested_transforms), dataset_id)
 
         await db.commit()
         logger.info("Schema agent analysis persisted for dataset %s", dataset_id)
@@ -1315,3 +1350,369 @@ async def delete_semantic_label(
         raise HTTPException(status_code=404, detail="Label not found")
     await db.delete(lbl)
     await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Transformation endpoints
+# ---------------------------------------------------------------------------
+
+async def _get_dataset_or_404(dataset_id: str, db: AsyncSession) -> Dataset:
+    result = await db.execute(
+        select(Dataset)
+        .where(Dataset.id == dataset_id, Dataset.status != "deleted")
+        .options(selectinload(Dataset.columns))
+    )
+    ds = result.scalar_one_or_none()
+    if ds is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    return ds
+
+
+@router.get("/datasets/{dataset_id}/transformations", response_model=list[TransformationStepResponse])
+async def list_transformations(dataset_id: str, db: AsyncSession = Depends(get_db)):
+    """List all transformation steps for a dataset (audit trail)."""
+    await _get_dataset_or_404(dataset_id, db)
+    result = await db.execute(
+        select(TransformationStep)
+        .where(TransformationStep.dataset_id == dataset_id)
+        .order_by(TransformationStep.step_order)
+    )
+    return [TransformationStepResponse.model_validate(s) for s in result.scalars().all()]
+
+
+@router.post("/datasets/{dataset_id}/transformations/preview", response_model=TransformationPreviewResponse)
+async def preview_transformation(
+    dataset_id: str,
+    body: TransformationStepCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    """Preview a transformation step on sample data without saving anything."""
+    from app.services import transform as transform_svc
+
+    ds = await _get_dataset_or_404(dataset_id, db)
+    defn = dict(body.definition)
+    if "step_type" not in defn:
+        defn["step_type"] = body.step_type
+
+    try:
+        df = storage_svc.read_dataset(sync_engine, ds.table_name, limit=200)
+        preview = transform_svc.preview_step(df, defn)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Preview failed: {exc}") from exc
+
+    return TransformationPreviewResponse(step=None, preview=preview)
+
+
+@router.post("/datasets/{dataset_id}/transformations", response_model=TransformationStepResponse, status_code=201)
+async def create_transformation(
+    dataset_id: str,
+    body: TransformationStepCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a pending transformation step."""
+    await _get_dataset_or_404(dataset_id, db)
+
+    # Determine next step_order
+    result = await db.execute(
+        select(TransformationStep)
+        .where(TransformationStep.dataset_id == dataset_id)
+        .order_by(TransformationStep.step_order.desc())
+    )
+    steps = result.scalars().all()
+    next_order = (steps[0].step_order + 1) if steps else 0
+
+    defn = dict(body.definition)
+    if "step_type" not in defn:
+        defn["step_type"] = body.step_type
+
+    step = TransformationStep(
+        id=uuid.uuid4().hex,
+        dataset_id=dataset_id,
+        step_order=next_order,
+        step_type=body.step_type,
+        name=body.name,
+        description=body.description,
+        definition=defn,
+        status="pending",
+        created_by="user",
+        ai_prompt=body.ai_prompt,
+    )
+    db.add(step)
+    await db.commit()
+    await db.refresh(step)
+    return TransformationStepResponse.model_validate(step)
+
+
+@router.post("/datasets/{dataset_id}/transformations/{step_id}/approve", response_model=TransformationStepResponse)
+async def approve_transformation(
+    dataset_id: str,
+    step_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Approve and apply a transformation — materializes the column into PostgreSQL."""
+    from app.services import transform as transform_svc
+
+    ds = await _get_dataset_or_404(dataset_id, db)
+
+    result = await db.execute(
+        select(TransformationStep).where(
+            TransformationStep.id == step_id,
+            TransformationStep.dataset_id == dataset_id,
+        )
+    )
+    step = result.scalar_one_or_none()
+    if step is None:
+        raise HTTPException(status_code=404, detail="Transformation step not found")
+    if step.status == "applied":
+        raise HTTPException(status_code=409, detail="Step is already applied")
+    if step.status == "rejected":
+        raise HTTPException(status_code=409, detail="Cannot apply a rejected step")
+
+    # Materialize
+    try:
+        transform_svc.materialize_step(sync_engine, ds.table_name, step.definition)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Materialization failed: {exc}") from exc
+
+    step.status = "applied"
+
+    # Update DatasetColumn catalog: add/rename column entry
+    step_type = step.step_type
+    if step_type == "rename":
+        from_col = step.definition["from_column"]
+        to_col = step.definition["to_column"]
+        col_result = await db.execute(
+            select(DatasetColumn).where(
+                DatasetColumn.dataset_id == dataset_id,
+                DatasetColumn.column_name == from_col,
+            )
+        )
+        col = col_result.scalar_one_or_none()
+        if col:
+            col.column_name = to_col
+            col.display_name = to_col
+    else:
+        output_col = step.definition.get("output_column")
+        if output_col:
+            existing_col = await db.execute(
+                select(DatasetColumn).where(
+                    DatasetColumn.dataset_id == dataset_id,
+                    DatasetColumn.column_name == output_col,
+                )
+            )
+            if not existing_col.scalar_one_or_none():
+                output_type = step.definition.get("output_type", "text")
+                db.add(DatasetColumn(
+                    id=uuid.uuid4().hex,
+                    dataset_id=dataset_id,
+                    column_name=output_col,
+                    display_name=step.name,
+                    data_type=output_type,
+                    column_role="attribute" if output_type == "text" else "measure",
+                    unique_count=None,
+                    sample_values=None,
+                ))
+
+            # Create SemanticColumn entry for the new column
+            existing_sc = await db.execute(
+                select(SemanticColumn).where(
+                    SemanticColumn.dataset_id == dataset_id,
+                    SemanticColumn.column_name == output_col,
+                )
+            )
+            if not existing_sc.scalar_one_or_none():
+                db.add(SemanticColumn(
+                    id=uuid.uuid4().hex,
+                    dataset_id=dataset_id,
+                    column_name=output_col,
+                    description=step.description or f"Calculated column: {step.name}",
+                    synonyms=[],
+                ))
+
+    await db.commit()
+    await db.refresh(step)
+    return TransformationStepResponse.model_validate(step)
+
+
+@router.post("/datasets/{dataset_id}/transformations/{step_id}/reject", response_model=TransformationStepResponse)
+async def reject_transformation(
+    dataset_id: str,
+    step_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Reject a pending transformation step."""
+    result = await db.execute(
+        select(TransformationStep).where(
+            TransformationStep.id == step_id,
+            TransformationStep.dataset_id == dataset_id,
+        )
+    )
+    step = result.scalar_one_or_none()
+    if step is None:
+        raise HTTPException(status_code=404, detail="Transformation step not found")
+    if step.status == "applied":
+        raise HTTPException(status_code=409, detail="Cannot reject an already applied step")
+    step.status = "rejected"
+    await db.commit()
+    await db.refresh(step)
+    return TransformationStepResponse.model_validate(step)
+
+
+@router.delete("/datasets/{dataset_id}/transformations/{step_id}", status_code=204)
+async def delete_transformation(
+    dataset_id: str,
+    step_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a pending or rejected transformation step. Applied steps cannot be deleted."""
+    result = await db.execute(
+        select(TransformationStep).where(
+            TransformationStep.id == step_id,
+            TransformationStep.dataset_id == dataset_id,
+        )
+    )
+    step = result.scalar_one_or_none()
+    if step is None:
+        raise HTTPException(status_code=404, detail="Transformation step not found")
+    if step.status == "applied":
+        raise HTTPException(status_code=409, detail="Cannot delete an applied transformation step")
+    await db.delete(step)
+    await db.commit()
+
+
+@router.post("/datasets/{dataset_id}/transformations/suggest", response_model=TransformationPreviewResponse)
+async def suggest_transformation(
+    dataset_id: str,
+    body: TransformationSuggestRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """AI suggests a transformation definition from a natural language prompt.
+
+    Uses Claude with the semantic context to produce a structured JSON definition —
+    no arbitrary code is generated or executed.
+    The returned step has status='pending'; the user must call /approve to apply it.
+    """
+    from app.services import transform as transform_svc
+    from app.services.ai_context import build_agent_context
+
+    if not settings.ANTHROPIC_API_KEY_CHAT:
+        raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY_CHAT is not configured")
+
+    ds = await _get_dataset_or_404(dataset_id, db)
+
+    # Load semantic context
+    context = await build_agent_context([dataset_id], db)
+
+    # Build column info for the prompt
+    col_info = [
+        {"name": c.column_name, "display": c.display_name, "type": c.data_type, "role": c.column_role}
+        for c in ds.columns
+    ]
+
+    import anthropic
+    client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY_CHAT)
+
+    # Tool schema for the transformation definition
+    transform_tool_schema = {
+        "type": "object",
+        "required": ["name", "step_type", "definition", "reasoning"],
+        "properties": {
+            "name": {"type": "string", "description": "Human-readable name for this transformation"},
+            "description": {"type": "string"},
+            "step_type": {
+                "type": "string",
+                "enum": ["reclassification", "calculated_column", "concat"],
+            },
+            "definition": {
+                "type": "object",
+                "description": "Complete transformation definition JSON — must include step_type, output_column, and all required fields for the step type",
+            },
+            "reasoning": {"type": "string", "description": "Why this transformation is useful"},
+        },
+    }
+
+    system_prompt = (
+        "You are a data transformation assistant. Given a user's request and dataset context, "
+        "produce a structured transformation definition.\n\n"
+        "IMPORTANT: Only output declarative JSON rules — never suggest executable code.\n\n"
+        f"{context}\n\n"
+        "Available columns:\n" +
+        "\n".join(f"  - {c['name']} ({c['type']}, role={c['role']})" for c in col_info) +
+        "\n\nFor reclassification steps:\n"
+        "  - source_column: column to read from\n"
+        "  - output_column: name for the new column\n"
+        "  - output_type: 'text'\n"
+        "  - rules: array of {condition: {op, values/value}, result} ending with {default: 'Other'}\n"
+        "  - Supported ops: between, in, equals, contains, starts_with\n"
+        "For calculated_column steps:\n"
+        "  - output_column, output_type: 'numeric'\n"
+        "  - expression: nested {op, left, right} tree; leaves are {column: name} or {literal: 0}\n"
+        "  - Supported ops: add, subtract, multiply, divide, abs, negate, round\n"
+        "For concat steps:\n"
+        "  - columns: list of column names, output_column, separator\n"
+    )
+
+    try:
+        response = await client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=2048,
+            system=system_prompt,
+            messages=[{"role": "user", "content": body.prompt}],
+            tools=[{
+                "name": "create_transformation",
+                "description": "Submit the transformation definition",
+                "input_schema": transform_tool_schema,
+            }],
+            tool_choice={"type": "any"},
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"AI suggestion failed: {exc}") from exc
+
+    # Extract tool result
+    suggestion = None
+    for block in response.content:
+        if hasattr(block, "type") and block.type == "tool_use" and block.name == "create_transformation":
+            suggestion = block.input
+            break
+
+    if not suggestion:
+        raise HTTPException(status_code=502, detail="AI did not return a valid transformation definition")
+
+    defn = dict(suggestion.get("definition", {}))
+    if "step_type" not in defn:
+        defn["step_type"] = suggestion.get("step_type", "reclassification")
+
+    # Validate and preview before saving
+    try:
+        df = storage_svc.read_dataset(sync_engine, ds.table_name, limit=200)
+        preview = transform_svc.preview_step(df, defn)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Preview of AI suggestion failed: {exc}") from exc
+
+    # Persist as pending step
+    existing = await db.execute(
+        select(TransformationStep).where(TransformationStep.dataset_id == dataset_id)
+    )
+    existing_steps = existing.scalars().all()
+    next_order = (max(s.step_order for s in existing_steps) + 1) if existing_steps else 0
+
+    step = TransformationStep(
+        id=uuid.uuid4().hex,
+        dataset_id=dataset_id,
+        step_order=next_order,
+        step_type=suggestion.get("step_type", "reclassification"),
+        name=suggestion.get("name", "AI Suggestion"),
+        description=suggestion.get("description"),
+        definition=defn,
+        status="pending",
+        created_by="ai_agent",
+        ai_prompt=body.prompt,
+    )
+    db.add(step)
+    await db.commit()
+    await db.refresh(step)
+
+    return TransformationPreviewResponse(
+        step=TransformationStepResponse.model_validate(step),
+        preview=preview,
+    )

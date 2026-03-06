@@ -230,3 +230,41 @@ class SemanticColumnUpdate(BaseModel):
 class SemanticLabelBulkCreate(BaseModel):
     column_name: str
     labels: list[dict[str, Any]]  # [{raw_value, display_label, category?}]
+
+
+# ---------------------------------------------------------------------------
+# Transformations
+# ---------------------------------------------------------------------------
+
+class TransformationStepCreate(BaseModel):
+    step_type: str  # reclassification | calculated_column | rename | concat
+    name: str
+    description: str | None = None
+    definition: dict[str, Any]
+    ai_prompt: str | None = None
+
+
+class TransformationStepResponse(BaseModel):
+    id: str
+    dataset_id: str
+    step_order: int
+    step_type: str
+    name: str
+    description: str | None = None
+    definition: dict[str, Any]
+    status: str
+    created_by: str
+    ai_prompt: str | None = None
+    created_at: datetime
+    updated_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class TransformationPreviewResponse(BaseModel):
+    step: TransformationStepResponse | None = None
+    preview: dict[str, Any]
+
+
+class TransformationSuggestRequest(BaseModel):
+    prompt: str
