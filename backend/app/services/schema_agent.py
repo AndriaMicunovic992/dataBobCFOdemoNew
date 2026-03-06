@@ -65,13 +65,14 @@ Additionally, for each table you must provide:
      For each grouping column you find, you MUST provide:
      - column_name: the ACTUAL column name as it appears in the data
      - source_table: which dimension table it comes from
-     - sample_values: the actual values, EXACTLY as they appear (e.g. "Personalaufwand")
-     - business_terms: what a user would naturally say for each value (in English
-       AND the data language if different). This is the critical bridge — e.g.:
-         "Personalaufwand" → ["personnel costs", "Personalaufwand", "HR costs"]
-         "Warenaufwand" → ["material costs", "Warenaufwand", "COGS"]
-         "Umsatzerlöse" → ["revenue", "Umsatzerlöse", "sales revenue"]
+     - description: what this grouping represents in plain language
+     - value_mappings: a list of {value, terms} pairs — one entry PER DISTINCT VALUE:
+         {"value": "Personalaufwand", "terms": ["personnel costs", "HR costs", "Personalkosten"]}
+         {"value": "Warenaufwand", "terms": ["material costs", "Warenaufwand", "COGS"]}
+         {"value": "Umsatzerlöse", "terms": ["revenue", "Umsatzerlöse", "sales revenue"]}
 
+     CRITICAL: value_mappings must be PAIRED — each entry maps exactly ONE actual data
+     value to the business terms for THAT value. Do NOT use separate flat arrays.
      Include terms in BOTH the data's language AND English if they differ.
      For German data, always include both German and English terms.
 
@@ -173,7 +174,7 @@ _RESPONSE_SCHEMA = {
                                 ),
                                 "items": {
                                     "type": "object",
-                                    "required": ["column_name", "source_table", "description", "sample_values", "business_terms"],
+                                    "required": ["column_name", "source_table", "description", "value_mappings"],
                                     "properties": {
                                         "column_name": {
                                             "type": "string",
@@ -187,21 +188,30 @@ _RESPONSE_SCHEMA = {
                                             "type": "string",
                                             "description": "What this grouping represents in plain language",
                                         },
-                                        "sample_values": {
+                                        "value_mappings": {
                                             "type": "array",
-                                            "items": {"type": "string"},
-                                            "description": "The actual values in this column, exactly as they appear in the data",
-                                        },
-                                        "business_terms": {
-                                            "type": "array",
-                                            "items": {"type": "string"},
                                             "description": (
-                                                "CRITICAL: Map each sample_value to a common business term "
-                                                "a user would naturally say. Examples: "
-                                                "'Personalaufwand' → 'personnel costs'. "
-                                                "'Warenaufwand' → 'material costs'. "
-                                                "Include terms in BOTH the data language AND English."
+                                                "For EACH distinct value in this column, provide the actual "
+                                                "data value AND the business terms a user would say for it. "
+                                                "Example: {\"value\": \"Personalaufwand\", "
+                                                "\"terms\": [\"personnel costs\", \"HR costs\", \"Personalkosten\"]}. "
+                                                "Include terms in BOTH English AND the data language."
                                             ),
+                                            "items": {
+                                                "type": "object",
+                                                "required": ["value", "terms"],
+                                                "properties": {
+                                                    "value": {
+                                                        "type": "string",
+                                                        "description": "The actual value as it appears in the data",
+                                                    },
+                                                    "terms": {
+                                                        "type": "array",
+                                                        "items": {"type": "string"},
+                                                        "description": "Business terms a user would say for this value",
+                                                    },
+                                                },
+                                            },
                                         },
                                     },
                                 },

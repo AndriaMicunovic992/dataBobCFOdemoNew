@@ -1330,12 +1330,21 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
 
     context = await build_agent_context(list(related_ids), db)
 
+    # Build enriched baseline so chat tools can see dimension-joined columns
+    all_rel_refs = [RelationshipRef(rel_id=r.id) for r in all_rels]
+    try:
+        baseline_df = await _build_baseline_df(dataset, all_rel_refs, db)
+    except Exception as exc:
+        logger.warning("Failed to build baseline for chat tools: %s", exc)
+        baseline_df = None
+
     return StreamingResponse(
         stream_chat(
             message=request.message,
             dataset_id=request.dataset_id,
             history=request.conversation_history,
             context=context,
+            baseline_df=baseline_df,
         ),
         media_type="text/event-stream",
     )

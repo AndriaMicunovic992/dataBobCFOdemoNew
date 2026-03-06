@@ -102,15 +102,30 @@ async def build_agent_context(
                 col = g.get("column_name", "")
                 src = g.get("source_table", "")
                 desc = g.get("description", "")
+                mappings = g.get("value_mappings", [])
+                # Legacy fallback
                 samples = g.get("sample_values", [])
-                terms = g.get("business_terms", [])
+                bterms = g.get("business_terms", [])
+
                 parts.append(f'      <grouping column="{_esc(col)}" source="{_esc(src)}">')
                 if desc:
                     parts.append(f'        <description>{_esc(desc)}</description>')
-                if samples:
+
+                if mappings:
+                    # New structured format: each entry is {value, terms}
+                    parts.append("        <value_mappings>")
+                    for m in mappings:
+                        val = m.get("value", "")
+                        mterms = m.get("terms", [])
+                        terms_str = ", ".join(_esc(str(t)) for t in mterms)
+                        parts.append(f'          <mapping value="{_esc(val)}" terms="{terms_str}"/>')
+                    parts.append("        </value_mappings>")
+                elif samples:
+                    # Legacy flat arrays
                     parts.append(f'        <values>{", ".join(_esc(str(v)) for v in samples)}</values>')
-                if terms:
-                    parts.append(f'        <business_terms>{", ".join(_esc(str(t)) for t in terms)}</business_terms>')
+                    if bterms:
+                        parts.append(f'        <business_terms>{", ".join(_esc(str(t)) for t in bterms)}</business_terms>')
+
                 parts.append("      </grouping>")
             parts.append("    </existing_groupings>")
         elif groupings and isinstance(groupings, str):
@@ -236,14 +251,22 @@ async def build_agent_context(
         if isinstance(groupings, list):
             for g in groupings:
                 col = g.get("column_name", "")
-                samples = g.get("sample_values", [])
-                business_terms = g.get("business_terms", [])
-                # Pair each term with the first sample value as the filter hint
-                for i, term in enumerate(business_terms):
-                    # Determine the corresponding sample value (cycle if more terms than samples)
-                    val = samples[min(i, len(samples) - 1)] if samples else ""
-                    if term and val:
-                        glossary_entries.append((term.lower(), f'{col} = "{val}"'))
+                mappings = g.get("value_mappings", [])
+                if mappings:
+                    # New format: each entry {value, terms} is properly paired
+                    for m in mappings:
+                        val = m.get("value", "")
+                        for term in m.get("terms", []):
+                            if term and val:
+                                glossary_entries.append((term.lower(), f'{col} = "{val}"'))
+                else:
+                    # Legacy format: flat arrays (best-effort pairing)
+                    samples = g.get("sample_values", [])
+                    bterms = g.get("business_terms", [])
+                    for i, term in enumerate(bterms):
+                        val = samples[min(i, len(samples) - 1)] if samples else ""
+                        if term and val:
+                            glossary_entries.append((term.lower(), f'{col} = "{val}"'))
 
         sem_cols_for_ds = sem_by_ds.get(ds.id, {})
         for col_name, sem_col in sem_cols_for_ds.items():
