@@ -95,8 +95,27 @@ async def build_agent_context(
         if notes.get("scenario_hints"):
             parts.append(f"    <scenario_hints>{_esc(notes['scenario_hints'])}</scenario_hints>")
 
-        if notes.get("existing_groupings"):
-            parts.append(f"    <existing_groupings>{_esc(notes['existing_groupings'])}</existing_groupings>")
+        groupings = notes.get("existing_groupings", [])
+        if groupings and isinstance(groupings, list):
+            parts.append("    <existing_groupings>")
+            for g in groupings:
+                col = g.get("column_name", "")
+                src = g.get("source_table", "")
+                desc = g.get("description", "")
+                samples = g.get("sample_values", [])
+                terms = g.get("business_terms", [])
+                parts.append(f'      <grouping column="{_esc(col)}" source="{_esc(src)}">')
+                if desc:
+                    parts.append(f'        <description>{_esc(desc)}</description>')
+                if samples:
+                    parts.append(f'        <values>{", ".join(_esc(str(v)) for v in samples)}</values>')
+                if terms:
+                    parts.append(f'        <business_terms>{", ".join(_esc(str(t)) for t in terms)}</business_terms>')
+                parts.append("      </grouping>")
+            parts.append("    </existing_groupings>")
+        elif groupings and isinstance(groupings, str):
+            # Legacy: handle old string format
+            parts.append(f"    <existing_groupings>{_esc(groupings)}</existing_groupings>")
 
         if notes.get("measure_interpretation"):
             parts.append(f"    <measure_interpretation>{_esc(notes['measure_interpretation'])}</measure_interpretation>")
@@ -206,25 +225,48 @@ async def build_agent_context(
 
         parts.append("  </dataset>")
 
-    # Glossary: extract term→filter mappings from scenario_hints across all datasets
-    glossary_terms: list[tuple[str, str]] = []
+    # Build glossary from three structured sources:
+    # 1. existing_groupings[].business_terms → maps to column + value
+    # 2. semantic_value_labels categories → maps to column + category filter
+    # 3. semantic_columns synonyms → maps to column name
+    glossary_entries: list[tuple[str, str]] = []
     for ds in datasets:
-        hints = (ds.agent_context_notes or {}).get("scenario_hints", "")
-        if hints:
-            # Simple heuristic: find "X = 'Y'" patterns in hints
-            import re
-            for m in re.finditer(r"(\w[\w\s]+?)\s+(?:is|=)\s+'([^']+)'", hints):
-                phrase, mapping = m.group(1).strip(), m.group(2).strip()
-                if len(phrase) > 2:
-                    # Find the column from context
-                    col_match = re.search(r"filter on (\w+) = ", hints)
-                    col_name = col_match.group(1) if col_match else ""
-                    if col_name:
-                        glossary_terms.append((phrase, f"{col_name} = '{mapping}'"))
+        notes = ds.agent_context_notes or {}
+        groupings = notes.get("existing_groupings", [])
+        if isinstance(groupings, list):
+            for g in groupings:
+                col = g.get("column_name", "")
+                samples = g.get("sample_values", [])
+                business_terms = g.get("business_terms", [])
+                # Pair each term with the first sample value as the filter hint
+                for i, term in enumerate(business_terms):
+                    # Determine the corresponding sample value (cycle if more terms than samples)
+                    val = samples[min(i, len(samples) - 1)] if samples else ""
+                    if term and val:
+                        glossary_entries.append((term.lower(), f'{col} = "{val}"'))
 
-    if glossary_terms:
+        sem_cols_for_ds = sem_by_ds.get(ds.id, {})
+        for col_name, sem_col in sem_cols_for_ds.items():
+            # Category-based entries from semantic value labels
+            categories: dict[str, list[str]] = {}
+            for lbl in sem_col.labels:
+                if lbl.category:
+                    categories.setdefault(lbl.category, []).append(lbl.raw_value)
+            for cat, vals in categories.items():
+                sample_str = ", ".join(repr(v) for v in vals[:5])
+                suffix = "..." if len(vals) > 5 else ""
+                glossary_entries.append((cat.lower(), f'{col_name} IN [{sample_str}{suffix}]'))
+            # Synonym-based entries
+            for syn in (sem_col.synonyms or []):
+                glossary_entries.append((syn.lower(), f'column: {col_name}'))
+
+    if glossary_entries:
         parts.append("  <glossary>")
-        for phrase, mapping in glossary_terms[:20]:
+        seen: set[str] = set()
+        for phrase, mapping in glossary_entries[:30]:
+            if phrase in seen:
+                continue
+            seen.add(phrase)
             parts.append(f'    <term phrase="{_esc(phrase)}" maps_to="{_esc(mapping)}"/>')
         parts.append("  </glossary>")
 

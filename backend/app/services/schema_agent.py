@@ -55,24 +55,31 @@ Additionally, for each table you must provide:
    - measure_interpretation: what the numeric columns mean (are negatives expenses? is it in EUR/USD?)
    - domain: what domain this data belongs to (financial, sales, hr, etc.)
    - existing_groupings: CRITICAL — look at dimension tables for columns that ALREADY
-     provide category/group/hierarchy information. These are far more reliable than
-     AI-generated classifications. Examples of what to look for:
-     * A "reporting_h2" or "account_group" or "kostengruppe" column in the accounts table
-       that groups accounts into categories like "Personnel", "Materials", "Revenue"
-     * A "department_group" column in a departments table
-     * A "product_line" or "item_category" column in a products table
-     When you find these, document them clearly:
-     "The accounts dimension has a 'reporting_h2' column that groups accounts into
-      cost categories. Values include: Personalaufwand (personnel), Warenaufwand (materials),
-      Abschreibungen (depreciation). Use this column — NOT account codes — when the user
-      asks about cost categories or types of expenses."
-   - scenario_hints: specific instructions for scenario planning. Reference the
-     existing_groupings above. Examples:
-     "To increase personnel costs by 10%, filter on reporting_h2 = 'Personalaufwand'.
-      Do NOT filter on account code ranges — use the existing category column instead."
-     "Revenue is reporting_h2 = 'Umsatzerlöse'."
-     The Scenario Agent should ALWAYS prefer filtering on existing grouping columns
-     over raw ID/code columns when the user speaks in business terms.
+     provide category/group/hierarchy information. Discover these by their CHARACTERISTICS:
+     * Text columns in dimension tables (not the join key column)
+     * Low cardinality: typically 3-30 unique values
+     * Values are descriptive categories, not numeric codes or IDs
+     * The column name can be ANYTHING — you must identify it by the data pattern,
+       not by looking for specific names like "reporting_h2" or "account_group"
+
+     For each grouping column you find, you MUST provide:
+     - column_name: the ACTUAL column name as it appears in the data
+     - source_table: which dimension table it comes from
+     - sample_values: the actual values, EXACTLY as they appear (e.g. "Personalaufwand")
+     - business_terms: what a user would naturally say for each value (in English
+       AND the data language if different). This is the critical bridge — e.g.:
+         "Personalaufwand" → ["personnel costs", "Personalaufwand", "HR costs"]
+         "Warenaufwand" → ["material costs", "Warenaufwand", "COGS"]
+         "Umsatzerlöse" → ["revenue", "Umsatzerlöse", "sales revenue"]
+
+     Include terms in BOTH the data's language AND English if they differ.
+     For German data, always include both German and English terms.
+
+   - scenario_hints: write as: "To filter X, use [actual_column_name] = '[actual_value]'.
+     To filter Y, use [actual_column_name] = '[actual_value]'."
+     NEVER use hardcoded examples from other datasets. Reference the actual column
+     and values you discovered in existing_groupings.
+     The Scenario Agent should ALWAYS prefer existing grouping columns over raw ID/code columns.
 
 8. value_label_suggestions: IMPORTANT — you only see a sample of values, NOT all values.
    DO NOT try to label every possible value. Instead:
@@ -132,7 +139,7 @@ _RESPONSE_SCHEMA = {
                         "type": "array",
                         "items": {
                             "type": "object",
-                            "required": ["column_name", "suggested_role", "suggested_display_name", "reasoning"],
+                            "required": ["column_name", "suggested_role"],
                             "properties": {
                                 "column_name": {"type": "string"},
                                 "suggested_role": {
@@ -152,8 +159,65 @@ _RESPONSE_SCHEMA = {
                             "time_range": {"type": "string"},
                             "measure_interpretation": {"type": "string"},
                             "domain": {"type": "string"},
-                            "existing_groupings": {"type": "string"},
-                            "scenario_hints": {"type": "string"},
+                            "existing_groupings": {
+                                "type": "array",
+                                "description": (
+                                    "Columns in dimension tables that already group or categorize values. "
+                                    "Discover these by their CHARACTERISTICS — not by name. Look for: "
+                                    "text columns in dimension tables (not the join key) with low cardinality "
+                                    "(3-30 unique values) where values are descriptive categories. "
+                                    "The column name can be anything — reporting_h2, account_group, "
+                                    "kostengruppe, expense_type, etc. What matters is the PATTERN: "
+                                    "it groups rows into human-meaningful categories. "
+                                    "ALWAYS prefer documenting these over suggesting reclassification transformations."
+                                ),
+                                "items": {
+                                    "type": "object",
+                                    "required": ["column_name", "source_table", "description", "sample_values", "business_terms"],
+                                    "properties": {
+                                        "column_name": {
+                                            "type": "string",
+                                            "description": "The actual column name as it appears in the data",
+                                        },
+                                        "source_table": {
+                                            "type": "string",
+                                            "description": "Which dimension table this column comes from",
+                                        },
+                                        "description": {
+                                            "type": "string",
+                                            "description": "What this grouping represents in plain language",
+                                        },
+                                        "sample_values": {
+                                            "type": "array",
+                                            "items": {"type": "string"},
+                                            "description": "The actual values in this column, exactly as they appear in the data",
+                                        },
+                                        "business_terms": {
+                                            "type": "array",
+                                            "items": {"type": "string"},
+                                            "description": (
+                                                "CRITICAL: Map each sample_value to a common business term "
+                                                "a user would naturally say. Examples: "
+                                                "'Personalaufwand' → 'personnel costs'. "
+                                                "'Warenaufwand' → 'material costs'. "
+                                                "Include terms in BOTH the data language AND English."
+                                            ),
+                                        },
+                                    },
+                                },
+                            },
+                            "scenario_hints": {
+                                "type": "string",
+                                "description": (
+                                    "Instructions for the scenario agent telling it HOW to filter data "
+                                    "when users make business-level requests. Reference existing_groupings "
+                                    "by their actual column_name and actual values — do NOT use hardcoded "
+                                    "examples from other datasets. Write instructions like: "
+                                    "'To filter personnel costs, use [actual_column_name] = [actual_value]. "
+                                    "To filter revenue, use [actual_column_name] = [actual_value].' "
+                                    "ALWAYS tell the agent to use grouping columns over raw ID columns."
+                                ),
+                            },
                         },
                     },
                     "value_label_suggestions": {
@@ -182,13 +246,13 @@ _RESPONSE_SCHEMA = {
                         "type": "array",
                         "description": (
                             "Only suggest when NO existing grouping column in a dimension table "
-                            "already covers the need. If reporting_h2 / account_group etc already "
-                            "exists, do NOT suggest a reclassification — document it in "
+                            "already covers the need. If a grouping column already exists, "
+                            "do NOT suggest a reclassification — document it in "
                             "existing_groupings instead."
                         ),
                         "items": {
                             "type": "object",
-                            "required": ["name", "step_type", "definition", "reason"],
+                            "required": ["name", "step_type", "definition"],
                             "properties": {
                                 "name": {"type": "string"},
                                 "description": {"type": "string"},
@@ -308,7 +372,7 @@ async def analyze_schema(tables: list[dict]) -> dict:
 
     response = await client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=4096,
+        max_tokens=8192,
         system=_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_message}],
         # Use tool_use to enforce structured JSON output
