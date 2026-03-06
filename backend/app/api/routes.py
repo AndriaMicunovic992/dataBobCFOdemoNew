@@ -405,7 +405,7 @@ async def _run_agent_and_persist(dataset_id: str) -> None:
 
         try:
             agent_result = await asyncio.wait_for(
-                schema_agent.analyze_schema(tables_payload), timeout=90
+                schema_agent.analyze_schema(tables_payload), timeout=300
             )
         except asyncio.TimeoutError:
             logger.warning("Schema agent timed out for dataset %s", dataset_id)
