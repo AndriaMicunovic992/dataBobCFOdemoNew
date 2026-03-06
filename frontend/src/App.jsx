@@ -1065,6 +1065,7 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
   const dims = useMemo(() => getDimFields(baseline), [baseline]);
   const measures = useMemo(() => getMeasureFields(baseline, schema), [baseline, schema]);
   const periods = useMemo(() => getUniq(baseline, "_period"), [baseline]);
+  const years = useMemo(() => [...new Set(periods.map(p => p?.toString().slice(0, 4)).filter(Boolean))].sort(), [periods]);
 
   const [active, setActive] = useState(new Set());
   const [editId, setEditId] = useState(null);
@@ -1104,16 +1105,25 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
     const name = `Scenario ${scenarios.length + 1}`;
     try {
       const created = await createScenario({ name, dataset_id: factDatasetId, rules: [], color });
-      setScenarios(p => [...p, { id: created.id, name: created.name, rules: created.rules || [], color: created.color || color }]);
+      setScenarios(p => [...p, { id: created.id, name: created.name, rules: created.rules || [], color: created.color || color, base_config: created.base_config || null }]);
       setEditId(created.id); setActive(p => new Set([...p, created.id]));
     } catch {
       const id = Date.now();
-      setScenarios(p => [...p, { id, name, rules: [], color }]);
+      setScenarios(p => [...p, { id, name, rules: [], color, base_config: null }]);
       setEditId(id); setActive(p => new Set([...p, id]));
     }
   }
   function delScenario(id) { setScenarios(p => p.filter(s => s.id !== id)); setActive(p => { const n = new Set(p); n.delete(id); return n; }); if (editId === id) setEditId(null); }
   function renameScenario(id, newName) { if (newName.trim()) setScenarios(p => p.map(s => s.id === id ? { ...s, name: newName.trim() } : s)); }
+  function updateBaseConfig(updates) {
+    if (!editId) return;
+    setScenarios(p => p.map(s => {
+      if (s.id !== editId) return s;
+      const cur = s.base_config || { method: "none", source_year: null, target_year: null, growth_pct: 0, last_n: 3, target_periods: [] };
+      return { ...s, base_config: { ...cur, ...updates } };
+    }));
+  }
+
   function addRule() {
     if (!editId || !newRule.name) return;
     setScenarios(p => p.map(s => s.id !== editId ? s : { ...s, rules: [...s.rules, { ...newRule, id: Date.now() }] }));
@@ -1157,6 +1167,13 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
                 <span style={{ width: 10, height: 10, borderRadius: "50%", background: sc.color, flexShrink: 0 }} />
                 {sc.name}
                 <span style={{ fontSize: 11, opacity: 0.6 }}>({sc.rules.length})</span>
+                {sc.base_config && sc.base_config.method !== "none" && (
+                  <span style={{ ...S.badge(C.purple), fontSize: 9 }}>
+                    {sc.base_config.method === "copy_year" ? `📅 ${sc.base_config.source_year}→${sc.base_config.target_year}` :
+                     sc.base_config.method === "last_n_months" ? `📅 last ${sc.base_config.last_n}m` :
+                     `📅 avg→${sc.base_config.target_year}`}
+                  </span>
+                )}
               </button>
               <span onClick={() => setEditId(editId === sc.id ? null : sc.id)} style={{ padding: "6px 8px", cursor: "pointer", color: editId === sc.id ? C.brand : C.textMuted, fontSize: 15 }}>✎</span>
               <span onClick={() => delScenario(sc.id)} style={{ padding: "6px 6px", cursor: "pointer", color: C.textMuted, fontSize: 15 }}>×</span>
@@ -1183,6 +1200,73 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
               onChange={e => renameScenario(editSc.id, e.target.value)}
               style={{ ...S.input, fontSize: 14, fontWeight: 700, color: editSc.color, border: `1px solid ${editSc.color}33`, background: editSc.color + "08", padding: "4px 10px", borderRadius: 6, width: "auto", minWidth: 120, maxWidth: 300 }}
             />
+          </div>
+
+          {/* Projection Config */}
+          <div style={{ background: C.bg, borderRadius: 8, padding: "10px 12px", marginBottom: 10, border: `1px solid ${C.border}` }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 8 }}>Projection (Future Periods)</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              <div>
+                <label style={{ fontSize: 10, color: C.textMuted, fontWeight: 600 }}>Method</label>
+                <select style={{ ...S.select, width: "100%" }}
+                  value={(editSc.base_config || {}).method || "none"}
+                  onChange={e => updateBaseConfig({ method: e.target.value })}>
+                  <option value="none">None (actuals only)</option>
+                  <option value="copy_year">Copy Year</option>
+                  <option value="average">Average All Periods</option>
+                  <option value="last_n_months">Average Last N Months</option>
+                </select>
+              </div>
+              <div>
+                <label style={{ fontSize: 10, color: C.textMuted, fontWeight: 600 }}>Growth %</label>
+                <input style={S.input} type="number" step="0.5" placeholder="0"
+                  value={(editSc.base_config || {}).growth_pct || 0}
+                  onChange={e => updateBaseConfig({ growth_pct: parseFloat(e.target.value) || 0 })} />
+              </div>
+            </div>
+            {(editSc.base_config?.method === "copy_year") && (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 8 }}>
+                <div>
+                  <label style={{ fontSize: 10, color: C.textMuted, fontWeight: 600 }}>Source Year</label>
+                  <select style={{ ...S.select, width: "100%" }}
+                    value={(editSc.base_config || {}).source_year || ""}
+                    onChange={e => updateBaseConfig({ source_year: parseInt(e.target.value) || null })}>
+                    <option value="">Select…</option>
+                    {years.map(y => <option key={y} value={y}>{y}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={{ fontSize: 10, color: C.textMuted, fontWeight: 600 }}>Target Year</label>
+                  <input style={S.input} type="number" placeholder="e.g. 2025"
+                    value={(editSc.base_config || {}).target_year || ""}
+                    onChange={e => updateBaseConfig({ target_year: parseInt(e.target.value) || null })} />
+                </div>
+              </div>
+            )}
+            {(editSc.base_config?.method === "average") && (
+              <div style={{ marginTop: 8 }}>
+                <label style={{ fontSize: 10, color: C.textMuted, fontWeight: 600 }}>Target Year</label>
+                <input style={{ ...S.input, width: "50%" }} type="number" placeholder="e.g. 2025"
+                  value={(editSc.base_config || {}).target_year || ""}
+                  onChange={e => updateBaseConfig({ target_year: parseInt(e.target.value) || null })} />
+              </div>
+            )}
+            {(editSc.base_config?.method === "last_n_months") && (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 8 }}>
+                <div>
+                  <label style={{ fontSize: 10, color: C.textMuted, fontWeight: 600 }}>Last N Months</label>
+                  <input style={S.input} type="number" min="1" max="24" placeholder="3"
+                    value={(editSc.base_config || {}).last_n || 3}
+                    onChange={e => updateBaseConfig({ last_n: parseInt(e.target.value) || 3 })} />
+                </div>
+                <div>
+                  <label style={{ fontSize: 10, color: C.textMuted, fontWeight: 600 }}>Target Year</label>
+                  <input style={S.input} type="number" placeholder="e.g. 2025"
+                    value={(editSc.base_config || {}).target_year || ""}
+                    onChange={e => updateBaseConfig({ target_year: parseInt(e.target.value) || null })} />
+                </div>
+              </div>
+            )}
           </div>
           {editSc.rules.map(rule => {
             const isEditing = editingRuleId === rule.id;
@@ -1368,6 +1452,12 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
       {active.size > 0 && rowFs.length > 0 && (
         <div style={S.card}>
           <div style={S.cardT}>Comparison Chart</div>
+          {scenarios.some(sc => active.has(sc.id) && sc.base_config?.method && sc.base_config.method !== "none") && (
+            <div style={{ padding: "8px 12px", borderRadius: 6, background: C.purpleBg, border: `1px solid ${C.purple}33`, fontSize: 11, color: C.purple, marginBottom: 10 }}>
+              📅 One or more active scenarios include <strong>projected future periods</strong>.
+              The chart shows actuals only — projected rows are included in backend compute totals.
+            </div>
+          )}
           <PivotChartView data={filtered} rowFs={rowFs} colF={colF} valF={valF} scenarioData={scOutputs} />
         </div>
       )}
@@ -1467,6 +1557,7 @@ function ChatPanel({ baseline, scenarios, setScenarios, setActiveTab, datasetId 
     const abortCtrl = new AbortController();
     abortRef.current = abortCtrl;
     const pendingRules = [];
+    let pendingBaseConfig = null;
 
     try {
       for await (const event of streamChat(msg, datasetId, history, abortCtrl.signal)) {
@@ -1477,16 +1568,21 @@ function ChatPanel({ baseline, scenarios, setScenarios, setActiveTab, datasetId 
             return next;
           });
         } else if (event.type === "scenario_rule") {
-          pendingRules.push({ ...event.rule, id: Date.now() + pendingRules.length });
+          // Extract base_config from the rule (it's a scenario-level field)
+          const { base_config, ...ruleWithoutBaseConfig } = event.rule;
+          if (base_config) pendingBaseConfig = base_config;
+          pendingRules.push({ ...ruleWithoutBaseConfig, id: Date.now() + pendingRules.length });
         } else if (event.type === "done") {
           if (pendingRules.length) {
             setScenarios(p => {
               const color = SC_COLORS[p.length % SC_COLORS.length];
               const name = `Scenario ${p.length + 1}`;
-              createScenario({ name, dataset_id: datasetId, rules: pendingRules, color }).then(created => {
-                setScenarios(prev => [...prev, { id: created.id, name: created.name, rules: created.rules || pendingRules, color: created.color || color }]);
+              const payload = { name, dataset_id: datasetId, rules: pendingRules, color };
+              if (pendingBaseConfig) payload.base_config = pendingBaseConfig;
+              createScenario(payload).then(created => {
+                setScenarios(prev => [...prev, { id: created.id, name: created.name, rules: created.rules || pendingRules, color: created.color || color, base_config: created.base_config || null }]);
               }).catch(() => {
-                setScenarios(prev => [...prev, { id: Date.now(), name, rules: pendingRules, color }]);
+                setScenarios(prev => [...prev, { id: Date.now(), name, rules: pendingRules, color, base_config: pendingBaseConfig || null }]);
               });
               return p;
             });
@@ -1909,6 +2005,7 @@ export default function App() {
         name: s.name,
         rules: s.rules || [],
         color: s.color || SC_COLORS[0],
+        base_config: s.base_config || null,
       })));
     }
   }, [apiScenarios]);
@@ -2003,7 +2100,7 @@ export default function App() {
         if (prevIds.has(s.id)) {
           const p = prev.find(x => x.id === s.id);
           if (p && JSON.stringify(p) !== JSON.stringify(s)) {
-            updateScenario(s.id, { name: s.name, rules: s.rules, color: s.color }).catch(console.error);
+            updateScenario(s.id, { name: s.name, rules: s.rules, color: s.color, base_config: s.base_config || null }).catch(console.error);
           }
         }
       }

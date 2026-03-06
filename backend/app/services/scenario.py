@@ -1,5 +1,8 @@
 """Scenario computation engine using Polars.
 
+Includes both rule-based adjustments (apply_rules) and future-period
+projection (generate_projection / apply_scenario_with_projection).
+
 Replaces the client-side applyRules() function from the React prototype.
 Performance target: 100K rows × 5 rules < 100 ms.
 
@@ -398,6 +401,192 @@ def compute_waterfall(
     )
 
     return steps
+
+
+# ---------------------------------------------------------------------------
+# Projection engine (Step 4)
+# ---------------------------------------------------------------------------
+
+def _find_period_cols(df: pl.DataFrame) -> list[str]:
+    """Return all period-like column names found in the DataFrame."""
+    lowered = {c.lower(): c for c in df.columns}
+    result = []
+    for candidate in _PERIOD_COLUMN_CANDIDATES:
+        if candidate in lowered:
+            result.append(lowered[candidate])
+    return result
+
+
+def generate_projection(
+    df: pl.DataFrame,
+    base_config: dict,
+    value_column: str = "amount",
+) -> pl.DataFrame:
+    """Generate projected future-period rows from historical actuals.
+
+    Supported methods:
+
+    * ``copy_year``: Copy rows from ``source_year``, shift their period to
+      ``target_year``, and apply an optional ``growth_pct`` multiplier.
+      E.g. source_year=2024, target_year=2025, growth_pct=5 → copies Jan–Dec
+      2024 rows to Jan–Dec 2025, multiplied by 1.05.
+
+    * ``average``: Average each combination of dimension columns across all
+      existing periods, then replicate the averaged row for each period in
+      ``target_periods``.  Optional ``growth_pct`` applies on top.
+
+    * ``last_n_months``: Average across the last N distinct periods, then
+      replicate for each target period.
+
+    * ``none``: Return an empty DataFrame (no projection rows).
+
+    All projected rows receive ``_data_source = "projected"``; existing rows
+    receive ``_data_source = "actual"`` (added by
+    ``apply_scenario_with_projection``).
+
+    Returns a DataFrame containing **only** the projected rows.  The caller
+    must concat with the original (actual) rows.
+    """
+    method = base_config.get("method", "none")
+    if method == "none":
+        return pl.DataFrame()
+
+    period_cols = _find_period_cols(df)
+    period_col = period_cols[0] if period_cols else None
+    growth_factor = 1.0 + float(base_config.get("growth_pct", 0.0)) / 100.0
+
+    # Identify dimension columns (non-value, non-internal)
+    internal = {"_row_id", "_data_source"}
+    dim_cols = [
+        c for c in df.columns
+        if c != value_column and c not in internal and (period_col is None or c != period_col)
+    ]
+
+    if method == "copy_year":
+        source_year = str(base_config.get("source_year", ""))
+        target_year = str(base_config.get("target_year", ""))
+        if not source_year or not period_col:
+            return pl.DataFrame()
+
+        # Filter to source year rows
+        source_df = df.filter(
+            pl.col(period_col).cast(pl.Utf8).str.starts_with(source_year)
+        )
+        if source_df.is_empty():
+            return pl.DataFrame()
+
+        # Shift period string: replace leading "source_year" with "target_year"
+        projected = source_df.with_columns(
+            pl.col(period_col).cast(pl.Utf8)
+            .str.replace(source_year, target_year, literal=True)
+            .alias(period_col)
+        ).with_columns(
+            (pl.col(value_column).cast(pl.Float64) * growth_factor).alias(value_column)
+        ).with_columns(
+            pl.lit("projected").alias("_data_source")
+        )
+        # Drop internal row IDs — projected rows don't correspond to DB rows
+        if "_row_id" in projected.columns:
+            projected = projected.drop("_row_id")
+        return projected
+
+    elif method in ("average", "last_n_months"):
+        target_periods: list[str] = base_config.get("target_periods", [])
+        if not target_periods:
+            # Auto-generate: next 12 months after last actual period
+            if period_col and not df.is_empty():
+                last_period = df[period_col].cast(pl.Utf8).drop_nulls().sort().tail(1).item()
+                target_periods = _next_periods(last_period, 12)
+            else:
+                return pl.DataFrame()
+
+        # Select the periods to average over
+        if method == "last_n_months" and period_col:
+            last_n = int(base_config.get("last_n", 3))
+            all_periods = sorted(df[period_col].cast(pl.Utf8).drop_nulls().unique().to_list())
+            avg_periods = all_periods[-last_n:] if len(all_periods) >= last_n else all_periods
+            source_df = df.filter(pl.col(period_col).cast(pl.Utf8).is_in(avg_periods))
+        else:
+            source_df = df
+
+        if source_df.is_empty():
+            return pl.DataFrame()
+
+        # Average value per dimension combination
+        if dim_cols:
+            avg_df = (
+                source_df.lazy()
+                .group_by(dim_cols)
+                .agg(pl.col(value_column).cast(pl.Float64).mean().alias(value_column))
+                .collect()
+            )
+        else:
+            avg_val = float(source_df[value_column].cast(pl.Float64).mean() or 0.0)
+            avg_df = pl.DataFrame({value_column: [avg_val]})
+
+        # Apply growth
+        avg_df = avg_df.with_columns(
+            (pl.col(value_column) * growth_factor).alias(value_column)
+        )
+
+        # Replicate for each target period
+        parts = []
+        for period in target_periods:
+            part = avg_df
+            if period_col:
+                part = part.with_columns(pl.lit(period).alias(period_col))
+            part = part.with_columns(pl.lit("projected").alias("_data_source"))
+            parts.append(part)
+
+        return pl.concat(parts, how="diagonal_relaxed") if parts else pl.DataFrame()
+
+    logger.warning("Unknown projection method: %s", method)
+    return pl.DataFrame()
+
+
+def _next_periods(last_period: str, n: int) -> list[str]:
+    """Return the next N YYYY-MM periods after last_period."""
+    try:
+        year, month = int(last_period[:4]), int(last_period[5:7])
+    except (ValueError, IndexError):
+        return []
+    result = []
+    for _ in range(n):
+        month += 1
+        if month > 12:
+            month = 1
+            year += 1
+        result.append(f"{year:04d}-{month:02d}")
+    return result
+
+
+def apply_scenario_with_projection(
+    df: pl.DataFrame,
+    rules: list[dict],
+    base_config: dict | None,
+    value_column: str = "amount",
+) -> pl.DataFrame:
+    """Apply projection (if configured) then scenario rules.
+
+    1. Tag all existing rows as ``_data_source = "actual"``.
+    2. Generate projected rows (if base_config.method != "none").
+    3. Concatenate actual + projected rows.
+    4. Apply scenario rules to the combined DataFrame.
+
+    Returns a DataFrame with an additional ``_data_source`` column.
+    """
+    # Tag actual rows
+    combined = df.with_columns(pl.lit("actual").alias("_data_source"))
+
+    if base_config and base_config.get("method", "none") != "none":
+        projected = generate_projection(df, base_config, value_column)
+        if not projected.is_empty():
+            # Ensure projected has all columns (fill missing with null)
+            combined = pl.concat([combined, projected], how="diagonal_relaxed")
+
+    # Apply rules to the combined frame
+    result = apply_rules(combined, rules, value_column)
+    return result
 
 
 # ---------------------------------------------------------------------------

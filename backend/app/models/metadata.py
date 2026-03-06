@@ -135,6 +135,7 @@ class Scenario(Base):
     )
     rules: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     color: Mapped[str | None] = mapped_column(String, nullable=True)
+    base_config: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
