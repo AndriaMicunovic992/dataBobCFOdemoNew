@@ -362,6 +362,52 @@ async def _auto_populate_labels_from_relationship(
         label_count, fact_ds.name, fact_col, dim_ds.name, desc_col.column_name,
     )
 
+    # Second pass: create SemanticColumn entries for all text attribute columns
+    # in the dimension table (grouping columns like reporting_h2 that appear
+    # in the fact baseline after the join).
+    for dim_col_meta in dim_ds.columns:
+        if dim_col_meta.column_role not in ("attribute",) or dim_col_meta.data_type != "text":
+            continue
+        if dim_col_meta.column_name == dim_key:
+            continue  # skip the join key
+        # Check if this column already has a semantic entry on the fact dataset
+        existing_sem_r = await db.execute(
+            select(SemanticColumn).where(
+                SemanticColumn.dataset_id == fact_ds.id,
+                SemanticColumn.column_name == dim_col_meta.column_name,
+            )
+        )
+        if existing_sem_r.scalar_one_or_none():
+            continue
+        try:
+            dim_col_df = storage_svc.read_dataset(
+                sync_engine, dim_ds.table_name, columns=[dim_col_meta.column_name]
+            )
+            unique_vals = (
+                dim_col_df[dim_col_meta.column_name]
+                .drop_nulls().unique().sort().to_list()
+            )
+        except Exception:
+            unique_vals = []
+        val_preview = ", ".join(str(v) for v in unique_vals[:10])
+        if len(unique_vals) > 10:
+            val_preview += "..."
+        db.add(SemanticColumn(
+            id=uuid.uuid4().hex,
+            dataset_id=fact_ds.id,
+            column_name=dim_col_meta.column_name,
+            description=(
+                f"Grouping column from {dim_ds.name} dimension (joined via {dim_key}). "
+                f"Values: {val_preview}"
+            ),
+            synonyms=[],
+            value_source=f"{dim_ds.name}.{dim_col_meta.column_name}",
+        ))
+    await db.commit()
+    logger.info(
+        "Auto-created SemanticColumn entries for attribute columns of dim %s", dim_ds.name
+    )
+
 
 async def _run_agent_and_persist(dataset_id: str) -> None:
     """Background task: run schema agent and persist results."""

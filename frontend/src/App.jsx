@@ -106,22 +106,28 @@ const ROLE_OPTIONS = ["key", "measure", "attribute", "time", "ignore"];
 function getDimFields(bl) {
   if (!bl.length) return [];
   const nums = new Set(["amount", "entry_count"]);
-  const skip = new Set(["company_id"]);
-  return Object.keys(bl[0]).filter(k => !nums.has(k) && !skip.has(k) && typeof bl[0][k] !== "number").sort();
+  const skip = new Set(["company_id", "_data_source", "_row_id", "baseline_amount"]);
+  return Object.keys(bl[0]).filter(k =>
+    !nums.has(k) && !skip.has(k) && !k.startsWith("baseline_") &&
+    typeof bl[0][k] !== "number"
+  ).sort();
 }
 function getMeasureFields(bl, schema = null) {
   if (!bl.length) return [];
+  const skip = new Set(["entry_count", "_row_id"]);
   if (schema) {
     const measureNames = new Set(
       Object.values(schema).flatMap(t =>
         t.columns.filter(c => c.role === "measure").map(c => c.name)
       )
     );
-    const found = Object.keys(bl[0]).filter(k => measureNames.has(k));
+    const found = Object.keys(bl[0]).filter(k => measureNames.has(k) && !skip.has(k));
     if (found.length) return found;
   }
   // Fallback: heuristic for numeric non-id columns
-  return Object.keys(bl[0]).filter(k => typeof bl[0][k] === "number" && k !== "entry_count" && !k.endsWith("_id"));
+  return Object.keys(bl[0]).filter(k =>
+    typeof bl[0][k] === "number" && !skip.has(k) && !k.endsWith("_id")
+  );
 }
 function getUniq(bl, f) { return [...new Set(bl.map(r => r[f]).filter(v => v != null))].sort(); }
 function applyFilters(data, filters) {

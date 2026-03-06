@@ -311,19 +311,31 @@ def _batch_update(
     col_name: str,
     batch_size: int = 5000,
 ) -> int:
-    """Batch UPDATE a single column by _row_id."""
+    """Batch UPDATE a single column using VALUES CTE for much better performance."""
     if not row_ids:
         return 0
 
-    stmt = text(
-        f'UPDATE {_q(table_name)} SET {_q(col_name)} = :val WHERE "_row_id" = :rid'
-    )
+    tbl = _q(table_name)
+    col = _q(col_name)
     total = 0
     with engine.begin() as conn:
         for start in range(0, len(row_ids), batch_size):
             batch_ids = row_ids[start: start + batch_size]
             batch_vals = values[start: start + batch_size]
-            params = [{"rid": rid, "val": _safe_val(v)} for rid, v in zip(batch_ids, batch_vals)]
+            # Build parameterised VALUES list: (:rid_0::bigint, :val_0), ...
+            value_rows = []
+            params: dict = {}
+            for i, (rid, val) in enumerate(zip(batch_ids, batch_vals)):
+                params[f"rid_{i}"] = rid
+                params[f"val_{i}"] = _safe_val(val)
+                value_rows.append(f"(:rid_{i}::bigint, :val_{i})")
+            values_sql = ", ".join(value_rows)
+            stmt = text(
+                f"UPDATE {tbl} AS t "
+                f"SET {col} = v.new_val "
+                f"FROM (VALUES {values_sql}) AS v(row_id, new_val) "
+                f'WHERE t."_row_id" = v.row_id'
+            )
             conn.execute(stmt, params)
             total += len(batch_ids)
     return total
