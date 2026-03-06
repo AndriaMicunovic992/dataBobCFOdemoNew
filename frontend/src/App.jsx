@@ -9,7 +9,7 @@ import {
   updateRelationship as apiUpdateRelationship,
   deleteRelationship as apiDeleteRelationship,
   streamChat,
-  getScenarios, createScenario, updateScenario, deleteScenario,
+  getScenarios, createScenario, updateScenario, deleteScenario, computeScenario,
 } from "./api.js";
 
 // ─── THEME ──────────────────────────────────────────────────────
@@ -1067,11 +1067,10 @@ function RuleFilterAdd({ dims, existingFilters, onAdd }) {
   );
 }
 
-function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetId }) {
+function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetId, relIds }) {
   const dims = useMemo(() => getDimFields(baseline), [baseline]);
   const measures = useMemo(() => getMeasureFields(baseline, schema), [baseline, schema]);
-  const periods = useMemo(() => getUniq(baseline, "_period"), [baseline]);
-  const years = useMemo(() => [...new Set(periods.map(p => p?.toString().slice(0, 4)).filter(Boolean))].sort(), [periods]);
+  const basePeriods = useMemo(() => getUniq(baseline, "_period"), [baseline]);
 
   const [active, setActive] = useState(new Set());
   const [editId, setEditId] = useState(null);
@@ -1099,11 +1098,72 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
 
   const toggle = id => setActive(p => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const filtered = useMemo(() => applyFilters(baseline, filters), [baseline, filters]);
-  const scOutputs = useMemo(() => {
-    const o = {};
-    for (const sc of scenarios) if (active.has(sc.id)) o[sc.name] = applyFilters(applyRules(baseline, sc.rules, effectiveValF), filters);
-    return o;
-  }, [scenarios, active, baseline, filters, effectiveValF]);
+
+  const [scOutputs, setScOutputs] = useState({});
+  const [scComputing, setScComputing] = useState(false);
+
+  // Debounced server-side compute for active scenarios
+  useEffect(() => {
+    if (!active.size || !factDatasetId) {
+      setScOutputs({});
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      setScComputing(true);
+      const outputs = {};
+      for (const sc of scenarios) {
+        if (!active.has(sc.id)) continue;
+        try {
+          const result = await computeScenario(sc.id, factDatasetId, relIds, effectiveValF);
+          if (cancelled) return;
+          const cols = result.columns || [];
+          const rawRows = result.scenario || [];
+          const rows = rawRows.map(row => {
+            if (Array.isArray(row)) {
+              const obj = {};
+              cols.forEach((col, i) => { obj[col] = row[i]; });
+              if (!obj._period) {
+                if (obj.month_year) obj._period = obj.month_year;
+                else {
+                  for (const k of Object.keys(obj)) {
+                    const v = obj[k];
+                    if (v && typeof v === "string" && /^\d{4}-\d{2}/.test(v)) {
+                      obj._period = v.slice(0, 7);
+                      break;
+                    }
+                  }
+                }
+              }
+              return obj;
+            }
+            return row;
+          });
+          outputs[sc.name] = applyFilters(rows, filters);
+        } catch (e) {
+          console.error(`Compute failed for ${sc.name}:`, e);
+          // Fallback to client-side
+          outputs[sc.name] = applyFilters(applyRules(baseline, sc.rules, effectiveValF), filters);
+        }
+      }
+      if (!cancelled) {
+        setScOutputs(outputs);
+        setScComputing(false);
+      }
+    }, 300);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [active, scenarios, factDatasetId, relIds, effectiveValF, filters, baseline]);
+
+  const allPeriods = useMemo(() => {
+    const extraPeriods = new Set();
+    for (const rows of Object.values(scOutputs)) {
+      for (const r of rows) {
+        const p = r._period || r.period || r.month_year;
+        if (p) extraPeriods.add(String(p));
+      }
+    }
+    return [...new Set([...basePeriods, ...extraPeriods])].sort();
+  }, [basePeriods, scOutputs]);
   const editSc = scenarios.find(s => s.id === editId);
 
   async function addScenario() {
@@ -1208,19 +1268,31 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
             />
           </div>
 
-          {/* Projection Config */}
+          {/* Baseline Configuration */}
           <div style={{ background: C.bg, borderRadius: 8, padding: "10px 12px", marginBottom: 10, border: `1px solid ${C.border}` }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 8 }}>Projection (Future Periods)</div>
+            <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 8 }}>Baseline</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
               <div>
-                <label style={{ fontSize: 10, color: C.textMuted, fontWeight: 600 }}>Method</label>
+                <label style={{ fontSize: 10, color: C.textMuted, fontWeight: 600 }}>Source</label>
                 <select style={{ ...S.select, width: "100%" }}
-                  value={(editSc.base_config || {}).method || "none"}
-                  onChange={e => updateBaseConfig({ method: e.target.value })}>
-                  <option value="none">None (actuals only)</option>
-                  <option value="copy_year">Copy Year</option>
-                  <option value="average">Average All Periods</option>
-                  <option value="last_n_months">Average Last N Months</option>
+                  value={(() => {
+                    const cfg = editSc.base_config || {};
+                    if (cfg.source === "scenario" && cfg.source_scenario_id)
+                      return `scenario:${cfg.source_scenario_id}`;
+                    return "actuals";
+                  })()}
+                  onChange={e => {
+                    const val = e.target.value;
+                    if (val === "actuals") {
+                      updateBaseConfig({ source: "actuals", source_scenario_id: null });
+                    } else if (val.startsWith("scenario:")) {
+                      updateBaseConfig({ source: "scenario", source_scenario_id: val.split(":")[1] });
+                    }
+                  }}>
+                  <option value="actuals">Actuals</option>
+                  {scenarios.filter(s => s.id !== editSc.id).map(s => (
+                    <option key={s.id} value={`scenario:${s.id}`}>Scenario: {s.name}</option>
+                  ))}
                 </select>
               </div>
               <div>
@@ -1230,49 +1302,48 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
                   onChange={e => updateBaseConfig({ growth_pct: parseFloat(e.target.value) || 0 })} />
               </div>
             </div>
-            {(editSc.base_config?.method === "copy_year") && (
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 8 }}>
-                <div>
-                  <label style={{ fontSize: 10, color: C.textMuted, fontWeight: 600 }}>Source Year</label>
-                  <select style={{ ...S.select, width: "100%" }}
-                    value={(editSc.base_config || {}).source_year || ""}
-                    onChange={e => updateBaseConfig({ source_year: parseInt(e.target.value) || null })}>
-                    <option value="">Select…</option>
-                    {years.map(y => <option key={y} value={y}>{y}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label style={{ fontSize: 10, color: C.textMuted, fontWeight: 600 }}>Target Year</label>
-                  <input style={S.input} type="number" placeholder="e.g. 2025"
-                    value={(editSc.base_config || {}).target_year || ""}
-                    onChange={e => updateBaseConfig({ target_year: parseInt(e.target.value) || null })} />
-                </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 8 }}>
+              <div>
+                <label style={{ fontSize: 10, color: C.textMuted, fontWeight: 600 }}>Baseline From</label>
+                <select style={{ ...S.select, width: "100%" }}
+                  value={(editSc.base_config || {}).period_from || ""}
+                  onChange={e => updateBaseConfig({ period_from: e.target.value || null })}>
+                  <option value="">All periods</option>
+                  {allPeriods.map(p => <option key={p} value={p}>{p}</option>)}
+                </select>
               </div>
-            )}
-            {(editSc.base_config?.method === "average") && (
-              <div style={{ marginTop: 8 }}>
-                <label style={{ fontSize: 10, color: C.textMuted, fontWeight: 600 }}>Target Year</label>
-                <input style={{ ...S.input, width: "50%" }} type="number" placeholder="e.g. 2025"
-                  value={(editSc.base_config || {}).target_year || ""}
-                  onChange={e => updateBaseConfig({ target_year: parseInt(e.target.value) || null })} />
+              <div>
+                <label style={{ fontSize: 10, color: C.textMuted, fontWeight: 600 }}>Baseline To</label>
+                <select style={{ ...S.select, width: "100%" }}
+                  value={(editSc.base_config || {}).period_to || ""}
+                  onChange={e => updateBaseConfig({ period_to: e.target.value || null })}>
+                  <option value="">All periods</option>
+                  {allPeriods.map(p => <option key={p} value={p}>{p}</option>)}
+                </select>
               </div>
-            )}
-            {(editSc.base_config?.method === "last_n_months") && (
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 8 }}>
-                <div>
-                  <label style={{ fontSize: 10, color: C.textMuted, fontWeight: 600 }}>Last N Months</label>
-                  <input style={S.input} type="number" min="1" max="24" placeholder="3"
-                    value={(editSc.base_config || {}).last_n || 3}
-                    onChange={e => updateBaseConfig({ last_n: parseInt(e.target.value) || 3 })} />
-                </div>
-                <div>
-                  <label style={{ fontSize: 10, color: C.textMuted, fontWeight: 600 }}>Target Year</label>
-                  <input style={S.input} type="number" placeholder="e.g. 2025"
-                    value={(editSc.base_config || {}).target_year || ""}
-                    onChange={e => updateBaseConfig({ target_year: parseInt(e.target.value) || null })} />
-                </div>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 8 }}>
+              <div>
+                <label style={{ fontSize: 10, color: C.textMuted, fontWeight: 600 }}>Project Into Year</label>
+                <input style={S.input} type="number" placeholder="e.g. 2026 (empty = none)"
+                  value={(editSc.base_config || {}).project_to_year || ""}
+                  onChange={e => updateBaseConfig({
+                    project_to_year: parseInt(e.target.value) || null,
+                    projection_method: parseInt(e.target.value) ? "copy" : "none"
+                  })} />
               </div>
-            )}
+              <div>
+                <label style={{ fontSize: 10, color: C.textMuted, fontWeight: 600 }}>Projection Method</label>
+                <select style={{ ...S.select, width: "100%" }}
+                  value={(editSc.base_config || {}).projection_method || "none"}
+                  onChange={e => updateBaseConfig({ projection_method: e.target.value })}
+                  disabled={!(editSc.base_config || {}).project_to_year}>
+                  <option value="none">None</option>
+                  <option value="copy">Copy Year</option>
+                  <option value="average">Average</option>
+                </select>
+              </div>
+            </div>
           </div>
           {editSc.rules.map(rule => {
             const isEditing = editingRuleId === rule.id;
@@ -1317,17 +1388,23 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 8 }}>
                       <div>
                         <label style={{ fontSize: 10, color: C.textMuted, fontWeight: 600 }}>Period From</label>
-                        <select style={{ ...S.select, width: "100%" }} value={rule.periodFrom || ""} onChange={e => updateRule(rule.id, { periodFrom: e.target.value })}>
-                          <option value="">All</option>
-                          {periods.map(p => <option key={p} value={p}>{p}</option>)}
-                        </select>
+                        <input style={S.input} type="text" placeholder="YYYY-MM"
+                          list={`periods-from-${rule.id}`}
+                          value={rule.periodFrom || ""}
+                          onChange={e => updateRule(rule.id, { periodFrom: e.target.value })} />
+                        <datalist id={`periods-from-${rule.id}`}>
+                          {allPeriods.map(p => <option key={p} value={p} />)}
+                        </datalist>
                       </div>
                       <div>
                         <label style={{ fontSize: 10, color: C.textMuted, fontWeight: 600 }}>Period To</label>
-                        <select style={{ ...S.select, width: "100%" }} value={rule.periodTo || ""} onChange={e => updateRule(rule.id, { periodTo: e.target.value })}>
-                          <option value="">All</option>
-                          {periods.map(p => <option key={p} value={p}>{p}</option>)}
-                        </select>
+                        <input style={S.input} type="text" placeholder="YYYY-MM"
+                          list={`periods-to-${rule.id}`}
+                          value={rule.periodTo || ""}
+                          onChange={e => updateRule(rule.id, { periodTo: e.target.value })} />
+                        <datalist id={`periods-to-${rule.id}`}>
+                          {allPeriods.map(p => <option key={p} value={p} />)}
+                        </datalist>
                       </div>
                     </div>
                     {/* Inline filter editor for existing rule */}
@@ -1378,17 +1455,23 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 10 }}>
               <div>
                 <label style={{ fontSize: 10, color: C.textMuted, fontWeight: 600 }}>Period From</label>
-                <select style={{ ...S.select, width: "100%" }} value={newRule.periodFrom} onChange={e => setNewRule(p => ({ ...p, periodFrom: e.target.value }))}>
-                  <option value="">All</option>
-                  {periods.map(p => <option key={p} value={p}>{p}</option>)}
-                </select>
+                <input style={S.input} type="text" placeholder="YYYY-MM"
+                  list="periods-from-new"
+                  value={newRule.periodFrom}
+                  onChange={e => setNewRule(p => ({ ...p, periodFrom: e.target.value }))} />
+                <datalist id="periods-from-new">
+                  {allPeriods.map(p => <option key={p} value={p} />)}
+                </datalist>
               </div>
               <div>
                 <label style={{ fontSize: 10, color: C.textMuted, fontWeight: 600 }}>Period To</label>
-                <select style={{ ...S.select, width: "100%" }} value={newRule.periodTo} onChange={e => setNewRule(p => ({ ...p, periodTo: e.target.value }))}>
-                  <option value="">All</option>
-                  {periods.map(p => <option key={p} value={p}>{p}</option>)}
-                </select>
+                <input style={S.input} type="text" placeholder="YYYY-MM"
+                  list="periods-to-new"
+                  value={newRule.periodTo}
+                  onChange={e => setNewRule(p => ({ ...p, periodTo: e.target.value }))} />
+                <datalist id="periods-to-new">
+                  {allPeriods.map(p => <option key={p} value={p} />)}
+                </datalist>
               </div>
             </div>
 
@@ -1455,13 +1538,18 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
         </div>
       )}
 
-      {active.size > 0 && rowFs.length > 0 && (
+      {scComputing && (
+        <div style={{ textAlign: "center", padding: 12, color: C.textMuted, fontSize: 12 }}>
+          Computing scenarios...
+        </div>
+      )}
+
+      {active.size > 0 && rowFs.length > 0 && !scComputing && (
         <div style={S.card}>
           <div style={S.cardT}>Comparison Chart</div>
-          {scenarios.some(sc => active.has(sc.id) && sc.base_config?.method && sc.base_config.method !== "none") && (
+          {scenarios.some(sc => active.has(sc.id) && sc.base_config?.project_to_year) && (
             <div style={{ padding: "8px 12px", borderRadius: 6, background: C.purpleBg, border: `1px solid ${C.purple}33`, fontSize: 11, color: C.purple, marginBottom: 10 }}>
               📅 One or more active scenarios include <strong>projected future periods</strong>.
-              The chart shows actuals only — projected rows are included in backend compute totals.
             </div>
           )}
           <PivotChartView data={filtered} rowFs={rowFs} colF={colF} valF={valF} scenarioData={scOutputs} />
@@ -2185,7 +2273,7 @@ export default function App() {
         <div style={{ flex: 1, overflow: "auto", padding: 24 }}>
           {tab === "schema" && <SchemaView schema={schema} setSchema={handleSetSchema} relationships={relationships} setRelationships={handleSetRelationships} onOpenUpload={() => setUploadOpen(true)} />}
           {tab === "actuals" && <ActualsView baseline={baseline} schema={schema} />}
-          {tab === "scenarios" && <ScenariosView baseline={baseline} scenarios={scenarios} setScenarios={handleSetScenarios} schema={schema} factDatasetId={factDataset?.dataset.id} />}
+          {tab === "scenarios" && <ScenariosView baseline={baseline} scenarios={scenarios} setScenarios={handleSetScenarios} schema={schema} factDatasetId={factDataset?.dataset.id} relIds={relIds} />}
         </div>
         <ChatPanel baseline={baseline} scenarios={scenarios} setScenarios={handleSetScenarios} setActiveTab={setTab} datasetId={factDataset?.dataset.id} />
       </div>
