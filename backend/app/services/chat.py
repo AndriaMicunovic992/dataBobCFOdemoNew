@@ -558,11 +558,16 @@ def _tool_list_scenarios(dataset_id: str) -> dict:
                         {
                             "name": r.get("name", ""),
                             "type": r.get("type", ""),
+                            "factor": r.get("factor"),
+                            "offset": r.get("offset"),
                             "filters": r.get("filters", {}),
+                            "periodFrom": r.get("periodFrom"),
+                            "periodTo": r.get("periodTo"),
                         }
                         for r in rules_data
                     ],
                     "color": row[3],
+                    "base_config": row[4] if row[4] else None,
                 })
             return {"scenarios": scenarios, "count": len(scenarios)}
     except Exception as exc:
