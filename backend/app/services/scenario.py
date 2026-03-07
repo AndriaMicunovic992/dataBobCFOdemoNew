@@ -110,54 +110,54 @@ def _apply_multiplier(
 
 
 def _apply_offset(
-    lf: pl.LazyFrame, mask: pl.Expr, value_column: str, total_offset: float
+    lf: pl.LazyFrame, mask: pl.Expr, value_column: str, total_offset: float,
+    distribution: str = "use_base",
 ) -> pl.LazyFrame:
-    """
-    Distribute total_offset evenly across matched rows, period-aware.
+    """Distribute total_offset across matched rows.
 
-    Algorithm:
-      1. Stamp every row with a stable __row_idx.
-      2. Filter to matching rows (preserving their original indices).
-      3. Count matching rows per period → per_period_rows.
-      4. Count distinct periods in matching rows → num_periods.
-      5. per_period_amount = total_offset / num_periods.
-      6. per_row_delta = per_period_amount / per_period_rows.
-      7. Left-join deltas back onto full frame by __row_idx; fill 0 elsewhere.
-
-    This ensures: 100 K offset across 12 months → each month gets ~8 333,
-    regardless of how many rows exist per month.
+    distribution='use_base' (default): proportional to each row's absolute value.
+    distribution='equal': period-aware even split (original behavior).
     """
     # Stamp stable row indices BEFORE filtering so they survive the round-trip.
     df_full = lf.collect().with_row_index("__row_idx")
-
-    # Filter uses mask as a plain Expr — works on eager DataFrames too.
     df_match = df_full.filter(mask)
 
     if df_match.is_empty():
-        # Nothing matched; drop the temporary index column and return.
         return df_full.drop("__row_idx").lazy()
 
-    period_col = _find_period_col(df_match)
-
-    if period_col:
-        num_periods = df_match[period_col].cast(pl.Utf8).n_unique()
-        per_period = total_offset / max(num_periods, 1)
-
-        # Compute per-row delta = per_period / rows_in_that_period
-        period_counts = (
-            df_match.group_by(period_col)
-            .agg(pl.len().alias("_period_row_count"))
-        )
-        df_match = df_match.join(period_counts, on=period_col, how="left")
-        df_match = df_match.with_columns(
-            (pl.lit(per_period) / pl.col("_period_row_count")).alias("_per_row_delta")
-        ).drop("_period_row_count")
+    if distribution == "use_base":
+        # Proportional: each row gets offset * (|row_value| / sum(|all_matched_values|))
+        total_abs = float(df_match[value_column].cast(pl.Float64).abs().sum())
+        if total_abs == 0:
+            # Fallback to equal if all values are 0
+            n_rows = len(df_match)
+            df_match = df_match.with_columns(
+                pl.lit(total_offset / max(n_rows, 1)).alias("_per_row_delta")
+            )
+        else:
+            df_match = df_match.with_columns(
+                (pl.col(value_column).cast(pl.Float64).abs() / pl.lit(total_abs) * pl.lit(total_offset))
+                .alias("_per_row_delta")
+            )
     else:
-        # No period column: distribute evenly across all matching rows.
-        n_rows = len(df_match)
-        df_match = df_match.with_columns(
-            pl.lit(total_offset / max(n_rows, 1)).alias("_per_row_delta")
-        )
+        # Equal (period-aware even split — original behavior)
+        period_col = _find_period_col(df_match)
+        if period_col:
+            num_periods = df_match[period_col].cast(pl.Utf8).n_unique()
+            per_period = total_offset / max(num_periods, 1)
+            period_counts = (
+                df_match.group_by(period_col)
+                .agg(pl.len().alias("_period_row_count"))
+            )
+            df_match = df_match.join(period_counts, on=period_col, how="left")
+            df_match = df_match.with_columns(
+                (pl.lit(per_period) / pl.col("_period_row_count")).alias("_per_row_delta")
+            ).drop("_period_row_count")
+        else:
+            n_rows = len(df_match)
+            df_match = df_match.with_columns(
+                pl.lit(total_offset / max(n_rows, 1)).alias("_per_row_delta")
+            )
 
     # Left-join deltas back by the stable row index.
     delta_df = df_match.select(["__row_idx", "_per_row_delta"])
@@ -217,8 +217,9 @@ def apply_rules(
 
         elif rule_type == "offset":
             total_offset = float(rule.get("offset", 0.0))
+            distribution = rule.get("distribution", "use_base")
             if total_offset != 0.0:
-                lf = _apply_offset(lf, mask, value_column, total_offset)
+                lf = _apply_offset(lf, mask, value_column, total_offset, distribution=distribution)
 
         else:
             logger.warning("Unknown rule type %r, skipping", rule_type)
