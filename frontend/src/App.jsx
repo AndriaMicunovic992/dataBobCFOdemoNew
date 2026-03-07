@@ -1464,9 +1464,9 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
           if (!groups[dk]) groups[dk] = { sample: r, values: [] };
           groups[dk].values.push(+(r[effectiveValF]) || 0);
         }
-        _avgBaseRows = Object.values(groups).map(({ sample, values }) => {
-          const avg = values.reduce((s, v) => s + v, 0) / values.length;
-          return { ...sample, [effectiveValF]: Math.round(avg * 100) / 100 };
+        _avgBaseRows = Object.values(groups).map(({ sample }) => {
+          // No real actuals for this period — show 0 as baseline
+          return { ...sample, [effectiveValF]: 0 };
         });
         return _avgBaseRows;
       };
