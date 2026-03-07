@@ -1542,7 +1542,7 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
                     <span style={{ fontSize: 12, color: isEditing ? editSc.color : C.textMuted }}>{isEditing ? "▾" : "▸"}</span>
                     <span style={{ fontWeight: 600, fontSize: 12 }}>{rule.name}</span>
                     <span style={S.badge(rule.type === "multiplier" ? C.brand : C.amber)}>{rule.type === "multiplier" ? `×${rule.factor}` : `+${fmt(rule.offset)}`}</span>
-                    {rule.type === "offset" && <span style={S.badge(rule.distribution === "equal" ? C.purple : C.textMuted)}>{rule.distribution === "equal" ? "⚖️ equal" : "📊 prop."}</span>}
+                    <span style={S.badge(rule.distribution === "equal" ? C.purple : C.textMuted)}>{rule.distribution === "equal" ? "⚖️ equal" : "📊 prop."}</span>
                     {rule.periodFrom && <span style={{ fontSize: 10, color: C.textMuted }}>{rule.periodFrom} → {rule.periodTo || "∞"}</span>}
                     {Object.entries(rule.filters || {}).filter(([, v]) => v && (!Array.isArray(v) || v.length > 0)).map(([k, v]) =>
                       <span key={k} style={S.badge(C.purple)}>{k}: {Array.isArray(v) ? (v.length > 2 ? v.slice(0, 2).join(", ") + ` +${v.length - 2}` : v.join(", ")) : v}</span>
@@ -1594,22 +1594,20 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
                         </datalist>
                       </div>
                     </div>
-                    {/* Distribution mode (only for offset rules) */}
-                    {rule.type === "offset" && (
-                      <div style={{ marginTop: 8 }}>
-                        <label style={{ fontSize: 10, color: C.textMuted, fontWeight: 600 }}>Distribution</label>
-                        <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
-                          <button onClick={() => updateRule(rule.id, { distribution: "use_base" })}
-                            style={{ ...S.btn(rule.distribution !== "equal" ? "primary" : "ghost", true), flex: 1, textAlign: "center" }}>
-                            📊 Proportional
-                          </button>
-                          <button onClick={() => updateRule(rule.id, { distribution: "equal" })}
-                            style={{ ...S.btn(rule.distribution === "equal" ? "primary" : "ghost", true), flex: 1, textAlign: "center" }}>
-                            ⚖️ Equal split
-                          </button>
-                        </div>
+                    {/* Distribution mode */}
+                    <div style={{ marginTop: 8 }}>
+                      <label style={{ fontSize: 10, color: C.textMuted, fontWeight: 600 }}>Distribution</label>
+                      <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+                        <button onClick={() => updateRule(rule.id, { distribution: "use_base" })}
+                          style={{ ...S.btn(rule.distribution !== "equal" ? "primary" : "ghost", true), flex: 1, textAlign: "center" }}>
+                          📊 Proportional
+                        </button>
+                        <button onClick={() => updateRule(rule.id, { distribution: "equal" })}
+                          style={{ ...S.btn(rule.distribution === "equal" ? "primary" : "ghost", true), flex: 1, textAlign: "center" }}>
+                          ⚖️ Equal split
+                        </button>
                       </div>
-                    )}
+                    </div>
                     {/* Inline filter editor for existing rule */}
                     <div style={{ marginTop: 8 }}>
                       <div style={{ fontSize: 10, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 4, fontWeight: 600 }}>Filters</div>
@@ -1678,22 +1676,20 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
               </div>
             </div>
 
-            {/* Distribution mode (only for offset rules) */}
-            {newRule.type === "offset" && (
-              <div style={{ marginTop: 10 }}>
-                <label style={{ fontSize: 10, color: C.textMuted, fontWeight: 600 }}>Distribution</label>
-                <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
-                  <button onClick={() => setNewRule(p => ({ ...p, distribution: "use_base" }))}
-                    style={{ ...S.btn(newRule.distribution !== "equal" ? "primary" : "ghost", true), flex: 1, textAlign: "center" }}>
-                    📊 Proportional (follow baseline)
-                  </button>
-                  <button onClick={() => setNewRule(p => ({ ...p, distribution: "equal" }))}
-                    style={{ ...S.btn(newRule.distribution === "equal" ? "primary" : "ghost", true), flex: 1, textAlign: "center" }}>
-                    ⚖️ Equal (flat split)
-                  </button>
-                </div>
+            {/* Distribution mode */}
+            <div style={{ marginTop: 10 }}>
+              <label style={{ fontSize: 10, color: C.textMuted, fontWeight: 600 }}>Distribution</label>
+              <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+                <button onClick={() => setNewRule(p => ({ ...p, distribution: "use_base" }))}
+                  style={{ ...S.btn(newRule.distribution !== "equal" ? "primary" : "ghost", true), flex: 1, textAlign: "center" }}>
+                  📊 Proportional (follow baseline)
+                </button>
+                <button onClick={() => setNewRule(p => ({ ...p, distribution: "equal" }))}
+                  style={{ ...S.btn(newRule.distribution === "equal" ? "primary" : "ghost", true), flex: 1, textAlign: "center" }}>
+                  ⚖️ Equal (flat split)
+                </button>
               </div>
-            )}
+            </div>
 
             {/* Rule filters */}
             <div style={{ marginTop: 10 }} ref={ruleFilterRef}>
