@@ -1362,21 +1362,6 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
         }
       }
 
-      // Merge in actual data for rule-target years not covered by projections.
-      const coveredPeriods = new Set(
-        expandedBaseline.map(r => r._period || r.period || r.month_year || "").filter(Boolean)
-      );
-      const ruleTargetYears = new Set([...ruleTargetPeriods].map(p => p.slice(0, 4)));
-      for (const futureYear of ruleTargetYears) {
-        if (futureYear === baseYear) continue;
-        const yearActuals = applyFilters(baseline, displayFilters.compute).filter(r => {
-          const period = r._period || r.period || r.month_year || "";
-          return period.startsWith(futureYear) && !coveredPeriods.has(period);
-        });
-        for (const r of yearActuals) coveredPeriods.add(r._period || r.period || r.month_year || "");
-        expandedBaseline.push(...yearActuals);
-      }
-
       console.log("[scOutputs] Applying rules for", sc.name, ":", sc.rules.map(r => ({ name: r.name, type: r.type, distribution: r.distribution, offset: r.offset, factor: r.factor })));
       const result = applyRules(expandedBaseline, sc.rules, effectiveValF);
       // Apply ALL filters (including calendar/display) to the final output
@@ -1508,25 +1493,6 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
         }
         addedPeriods.add(projPeriod);
       }
-
-      // Merge in raw actuals for rule-target years not already in the comparison baseline.
-      // Ensures e.g. real 2026 Feb-Nov actuals show in the ACT column when 2025 lacks those months.
-      const ruleTargetPeriods2 = new Set();
-      for (const rule of sc.rules) {
-        if (rule.periodFrom && rule.periodTo) generatePeriodRange(rule.periodFrom, rule.periodTo).forEach(p => ruleTargetPeriods2.add(p));
-        else if (rule.periodFrom) ruleTargetPeriods2.add(rule.periodFrom);
-      }
-      const ruleTargetYears2 = new Set([...ruleTargetPeriods2].map(p => p.slice(0, 4)));
-      for (const futureYear of ruleTargetYears2) {
-        if (futureYear === baseYear) continue;
-        const yearActuals = applyFilters(baseline, displayFilters.compute).filter(r => {
-          const period = r._period || r.period || r.month_year || "";
-          return period.startsWith(futureYear) && !addedPeriods.has(period);
-        });
-        for (const r of yearActuals) addedPeriods.add(r._period || r.period || r.month_year || "");
-        rows.push(...yearActuals);
-      }
-
       // Apply ALL filters (including calendar) for display
       result[sc.name] = applyFilters(rows, filters);
     }
