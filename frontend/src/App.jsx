@@ -491,7 +491,7 @@ function WaterfallChart({ baseline, scenarioData, scenarioName, scenarioColor, r
     let running = baseTotal;
     for (const item of items.slice(0, 15)) {
       const bottom = item.delta >= 0 ? running : running + item.delta;
-      bars.push({ name: item.key.length > 20 ? item.key.slice(0, 18) + "…" : item.key, value: item.delta, isTotal: false, delta: item.delta, bottom });
+      bars.push({ name: item.key.length > 20 ? item.key.slice(0, 18) + "…" : item.key, value: Math.abs(item.delta), isTotal: false, delta: item.delta, bottom });
       running += item.delta;
     }
     // If there are more items, aggregate as "Other"
@@ -499,7 +499,7 @@ function WaterfallChart({ baseline, scenarioData, scenarioName, scenarioColor, r
       const rest = items.slice(15).reduce((s, i) => s + i.delta, 0);
       if (Math.abs(rest) > 0.01) {
         const bottom = rest >= 0 ? running : running + rest;
-        bars.push({ name: "Other", value: rest, isTotal: false, delta: rest, bottom });
+        bars.push({ name: "Other", value: Math.abs(rest), isTotal: false, delta: rest, bottom });
         running += rest;
       }
     }
@@ -672,13 +672,13 @@ function ComparisonTable({ baseline, scenarioOutputs, rowFs, colF, valF, scenari
             </tr>
             {/* Sub header row: Actuals, Scenarios, Deltas */}
             <tr>
-              {rowFs.map(f => <th key={f} style={thClick(f)} onClick={() => toggleSort(f)}>{f.replace(/_/g, " ")}{arrow(f)}</th>)}
+              {rowFs.map((f, fi) => <th key={f} style={{ ...thClick(f), position: "sticky", left: fi === 0 ? 0 : undefined, zIndex: 2, background: C.white }} onClick={() => toggleSort(f)}>{f.replace(/_/g, " ")}{arrow(f)}</th>)}
               {colKeys.map(ck => (
                 <React.Fragment key={ck}>
                   <th style={thClick("act_" + ck, "right")} onClick={() => toggleSort("act_" + ck)}>Act{arrow("act_" + ck)}</th>
                   {scenarios.map(sc => (
                     <React.Fragment key={sc.id}>
-                      <th style={thClick("sc_" + sc.name + "_" + ck, "right", { color: sortCol === "sc_" + sc.name + "_" + ck ? C.brand : sc.color })} onClick={() => toggleSort("sc_" + sc.name + "_" + ck)}>{sc.name.slice(0, 6)}{arrow("sc_" + sc.name + "_" + ck)}</th>
+                      <th style={thClick("sc_" + sc.name + "_" + ck, "right", { color: sortCol === "sc_" + sc.name + "_" + ck ? C.brand : sc.color })} onClick={() => toggleSort("sc_" + sc.name + "_" + ck)}>{sc.name}{arrow("sc_" + sc.name + "_" + ck)}</th>
                       <th style={thClick("var_" + sc.name + "_" + ck, "right", { color: sortCol === "var_" + sc.name + "_" + ck ? C.brand : sc.color })} onClick={() => toggleSort("var_" + sc.name + "_" + ck)}>Δ{arrow("var_" + sc.name + "_" + ck)}</th>
                     </React.Fragment>
                   ))}
@@ -687,7 +687,7 @@ function ComparisonTable({ baseline, scenarioOutputs, rowFs, colF, valF, scenari
               <th style={thClick("_total", "right")} onClick={() => toggleSort("_total")}>Act{arrow("_total")}</th>
               {scenarios.map(sc => (
                 <React.Fragment key={sc.id}>
-                  <th style={thClick("sc_" + sc.name, "right", { color: sortCol === "sc_" + sc.name ? C.brand : sc.color })} onClick={() => toggleSort("sc_" + sc.name)}>{sc.name.slice(0, 6)}{arrow("sc_" + sc.name)}</th>
+                  <th style={thClick("sc_" + sc.name, "right", { color: sortCol === "sc_" + sc.name ? C.brand : sc.color })} onClick={() => toggleSort("sc_" + sc.name)}>{sc.name}{arrow("sc_" + sc.name)}</th>
                   <th style={thClick("var_" + sc.name, "right", { color: sortCol === "var_" + sc.name ? C.brand : sc.color })} onClick={() => toggleSort("var_" + sc.name)}>Δ{arrow("var_" + sc.name)}</th>
                 </React.Fragment>
               ))}
@@ -696,7 +696,7 @@ function ComparisonTable({ baseline, scenarioOutputs, rowFs, colF, valF, scenari
           <tbody>
             {data.slice(0, 80).map((r, i) => (
               <tr key={i} style={{ background: i % 2 === 0 ? "" : C.bg }}>
-                {rowFs.map(f => <td key={f} style={S.td}>{String(r[f] ?? "—")}</td>)}
+                {rowFs.map((f, fi) => <td key={f} style={{ ...S.td, position: fi === 0 ? "sticky" : undefined, left: fi === 0 ? 0 : undefined, zIndex: fi === 0 ? 1 : undefined, background: i % 2 === 0 ? C.white : C.bg }}>{String(r[f] ?? "—")}</td>)}
                 {colKeys.map(ck => (
                   <React.Fragment key={ck}>
                     <td style={{ ...S.td, ...S.mono, textAlign: "right", color: (r["act_" + ck] || 0) >= 0 ? C.green : C.red }}>{fmt(r["act_" + ck])}</td>
@@ -736,7 +736,7 @@ function ComparisonTable({ baseline, scenarioOutputs, rowFs, colF, valF, scenari
     <div style={{ maxHeight: 450, overflow: "auto" }}>
       <table style={{ width: "100%", borderCollapse: "collapse" }}>
         <thead><tr>
-          {rowFs.map(f => <th key={f} style={thClick(f)} onClick={() => toggleSort(f)}>{f.replace(/_/g, " ")}{arrow(f)}</th>)}
+          {rowFs.map((f, fi) => <th key={f} style={{ ...thClick(f), position: "sticky", left: fi === 0 ? 0 : undefined, zIndex: fi === 0 ? 2 : 1, background: C.white }} onClick={() => toggleSort(f)}>{f.replace(/_/g, " ")}{arrow(f)}</th>)}
           <th style={thClick("_total", "right")} onClick={() => toggleSort("_total")}>Actuals{arrow("_total")}</th>
           {scenarios.map(sc => <th key={sc.id} style={thClick("sc_" + sc.name, "right", { color: sortCol === "sc_" + sc.name ? C.brand : sc.color })} onClick={() => toggleSort("sc_" + sc.name)}>{sc.name}{arrow("sc_" + sc.name)}</th>)}
           {scenarios.map(sc => <th key={"v" + sc.id} style={thClick("var_" + sc.name, "right", { color: sortCol === "var_" + sc.name ? C.brand : sc.color })} onClick={() => toggleSort("var_" + sc.name)}>Δ {sc.name}{arrow("var_" + sc.name)}</th>)}
@@ -744,7 +744,7 @@ function ComparisonTable({ baseline, scenarioOutputs, rowFs, colF, valF, scenari
         <tbody>
           {data.slice(0, 120).map((r, i) => (
             <tr key={i} style={{ background: i % 2 === 0 ? "" : C.bg }}>
-              {rowFs.map(f => <td key={f} style={S.td}>{String(r[f] ?? "—")}</td>)}
+              {rowFs.map((f, fi) => <td key={f} style={{ ...S.td, position: fi === 0 ? "sticky" : undefined, left: fi === 0 ? 0 : undefined, zIndex: fi === 0 ? 1 : undefined, background: i % 2 === 0 ? C.white : C.bg }}>{String(r[f] ?? "—")}</td>)}
               <td style={{ ...S.td, ...S.mono, textAlign: "right", color: valColor(r._total) }}>{fmt(r._total)}</td>
               {scenarios.map(sc => <td key={sc.id} style={{ ...S.td, ...S.mono, textAlign: "right", color: sc.color }}>{fmt(r["sc_" + sc.name])}</td>)}
               {scenarios.map(sc => {
@@ -755,7 +755,7 @@ function ComparisonTable({ baseline, scenarioOutputs, rowFs, colF, valF, scenari
           ))}
         </tbody>
         <tfoot><tr style={{ background: C.bg }}>
-          <td colSpan={rowFs.length} style={{ ...S.th, fontWeight: 700, color: C.text, borderTop: `2px solid ${C.border}` }}>Total</td>
+          <td colSpan={rowFs.length} style={{ ...S.th, fontWeight: 700, color: C.text, borderTop: `2px solid ${C.border}`, position: "sticky", left: 0, background: C.bg, zIndex: 1 }}>Total</td>
           <td style={{ ...S.th, ...S.mono, textAlign: "right", fontWeight: 700, color: C.text, borderTop: `2px solid ${C.border}` }}>{fmt(data.reduce((s, r) => s + (r._total || 0), 0))}</td>
           {scenarios.map(sc => <td key={sc.id} style={{ ...S.th, ...S.mono, textAlign: "right", fontWeight: 700, color: sc.color, borderTop: `2px solid ${C.border}` }}>{fmt(data.reduce((s, r) => s + (r["sc_" + sc.name] || 0), 0))}</td>)}
           {scenarios.map(sc => {
@@ -1106,14 +1106,12 @@ function RuleFilterAdd({ dims, existingFilters, onAdd }) {
   );
 }
 
+const CALENDAR_YEARS = ["2020","2021","2022","2023","2024","2025","2026","2027"];
+
 function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetId, relIds }) {
   const dims = useMemo(() => getDimFields(baseline), [baseline]);
   const measures = useMemo(() => getMeasureFields(baseline, schema), [baseline, schema]);
   const basePeriods = useMemo(() => getUniq(baseline, "_period"), [baseline]);
-  const years = useMemo(() => {
-    const ys = new Set(basePeriods.map(p => p.slice(0, 4)).filter(Boolean));
-    return [...ys].sort();
-  }, [basePeriods]);
 
   const [active, setActive] = useState(new Set());
   const [editId, setEditId] = useState(null);
@@ -1195,15 +1193,9 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
       if (futurePeriods.length > 0 && expandedBaseline.length > 0) {
         for (const fp of futurePeriods) {
           const targetMonth = fp.slice(5, 7);
-          // Use base_year for exact month mapping when available
-          let matchingBasePeriod = baseYear ? `${baseYear}-${targetMonth}` : null;
-          if (matchingBasePeriod && !existingPeriods.has(matchingBasePeriod)) {
-            // Fallback if that exact month isn't in the baseline
-            const sortedBase = [...existingPeriods].sort();
-            matchingBasePeriod = sortedBase.find(bp => bp.slice(5, 7) === targetMonth)
-              || sortedBase[sortedBase.length - 1] || null;
-          }
-          if (!matchingBasePeriod) continue;
+          // Use base_year for exact month mapping; skip if that month has no actual data
+          const matchingBasePeriod = baseYear ? `${baseYear}-${targetMonth}` : null;
+          if (!matchingBasePeriod || !existingPeriods.has(matchingBasePeriod)) continue;
 
           const templateRows = expandedBaseline.filter(r =>
             (r._period || r.period || r.month_year || "") === matchingBasePeriod
@@ -1410,12 +1402,27 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
               </div>
               <div>
                 <label style={{ fontSize: 10, color: C.textMuted, fontWeight: 600 }}>Base Year</label>
-                <select style={{ ...S.select, width: "100%" }}
-                  value={(editSc.base_config || {}).base_year || ""}
-                  onChange={e => updateBaseConfig({ base_year: parseInt(e.target.value) || null })}>
-                  <option value="">Select year...</option>
-                  {years.map(y => <option key={y} value={y}>{y}</option>)}
-                </select>
+                {(() => {
+                  const cfg = editSc.base_config || {};
+                  if (cfg.source === "scenario" && cfg.source_scenario_id) {
+                    const parentSc = scenarios.find(s => s.id === cfg.source_scenario_id);
+                    const inheritedYear = parentSc?.base_config?.base_year ?? "—";
+                    return (
+                      <div style={{ ...S.select, width: "100%", background: C.bg, color: C.textMuted, cursor: "not-allowed", display: "flex", alignItems: "center", gap: 6 }}>
+                        <span>Inherited: {inheritedYear}</span>
+                        <span style={{ fontSize: 9, color: C.amber }}>from {parentSc?.name || "parent"}</span>
+                      </div>
+                    );
+                  }
+                  return (
+                    <select style={{ ...S.select, width: "100%" }}
+                      value={cfg.base_year || ""}
+                      onChange={e => updateBaseConfig({ base_year: parseInt(e.target.value) || null })}>
+                      <option value="">Select year...</option>
+                      {CALENDAR_YEARS.map(y => <option key={y} value={y}>{y}</option>)}
+                    </select>
+                  );
+                })()}
               </div>
             </div>
           </div>
@@ -1723,6 +1730,7 @@ function ChatPanel({ baseline, scenarios, setScenarios, setActiveTab, datasetId 
     const pendingRules = [];
     let pendingBaseConfig = null;
     let pendingExistingScenarioId = null;
+    let pendingScenarioName = null;
 
     try {
       for await (const event of streamChat(msg, datasetId, history, abortCtrl.signal)) {
@@ -1737,7 +1745,16 @@ function ChatPanel({ baseline, scenarios, setScenarios, setActiveTab, datasetId 
           const { base_config, ...ruleWithoutBaseConfig } = event.rule;
           if (base_config) pendingBaseConfig = base_config;
           if (event.scenario_id) pendingExistingScenarioId = event.scenario_id;
+          if (event.scenario_name) pendingScenarioName = event.scenario_name;
           pendingRules.push({ ...ruleWithoutBaseConfig, id: Date.now() + pendingRules.length });
+        } else if (event.type === "scenario_copied") {
+          // Duplicate the source scenario in local state using the new id/name from backend
+          setScenarios(prev => {
+            const source = prev.find(s => s.id === event.copied_from);
+            if (!source) return prev;
+            return [...prev, { ...source, id: event.id, name: event.name }];
+          });
+          setActiveTab("scenarios");
         } else if (event.type === "done") {
           if (pendingRules.length) {
             if (pendingExistingScenarioId) {
@@ -1757,14 +1774,13 @@ function ChatPanel({ baseline, scenarios, setScenarios, setActiveTab, datasetId 
             } else {
               // Create new scenario via API then add to state
               const color = SC_COLORS[scenarios.length % SC_COLORS.length];
-              const name = `Scenario ${scenarios.length + 1}`;
+              const name = pendingScenarioName || `Scenario ${scenarios.length + 1}`;
               const payload = { name, dataset_id: datasetId, rules: pendingRules, color };
               if (pendingBaseConfig) {
                 payload.base_config = {
                   source: pendingBaseConfig.source || "actuals",
                   source_scenario_id: pendingBaseConfig.source_scenario_id || null,
-                  period_from: pendingBaseConfig.period_from || null,
-                  period_to: pendingBaseConfig.period_to || null,
+                  base_year: pendingBaseConfig.base_year || null,
                 };
               }
               try {
