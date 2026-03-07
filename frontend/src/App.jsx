@@ -203,11 +203,32 @@ function applyRules(data, rules, valF = "amount") {
         res[i] = { ...res[i], [valF]: Math.round(cur * rule.factor * 100) / 100 };
       }
     } else if (rule.type === "offset" && matchIdx.length > 0) {
-      // Distribute evenly across all matching rows so total always equals rule.offset
-      const share = rule.offset / matchIdx.length;
-      for (const i of matchIdx) {
-        const cur = +res[i][valF] || 0;
-        res[i] = { ...res[i], [valF]: Math.round((cur + share) * 100) / 100 };
+      const distribution = rule.distribution || "use_base";
+      if (distribution === "equal") {
+        // Equal: divide total offset evenly across all matching rows
+        const share = rule.offset / matchIdx.length;
+        for (const i of matchIdx) {
+          const cur = +res[i][valF] || 0;
+          res[i] = { ...res[i], [valF]: Math.round((cur + share) * 100) / 100 };
+        }
+      } else {
+        // Proportional (use_base): distribute based on each row's share of total |value|
+        const totalBase = matchIdx.reduce((s, i) => s + Math.abs(+res[i][valF] || 0), 0);
+        if (totalBase === 0) {
+          // All base values are 0 — fall back to equal
+          const share = rule.offset / matchIdx.length;
+          for (const i of matchIdx) {
+            const cur = +res[i][valF] || 0;
+            res[i] = { ...res[i], [valF]: Math.round((cur + share) * 100) / 100 };
+          }
+        } else {
+          for (const i of matchIdx) {
+            const cur = +res[i][valF] || 0;
+            const proportion = Math.abs(cur) / totalBase;
+            const rowOffset = rule.offset * proportion;
+            res[i] = { ...res[i], [valF]: Math.round((cur + rowOffset) * 100) / 100 };
+          }
+        }
       }
     }
   }
@@ -282,7 +303,7 @@ function FilterManager({ baseline, allFields, filters, setFilters }) {
         {activeFilterFields.map(f => {
           const vals = filters[f] || [];
           const expanded = expandedF === f;
-          const allVals = getUniq(baseline, f);
+          const allVals = mergeWithCalendar(getUniq(baseline, f), f);
           const fVals = valSearch ? allVals.filter(v => String(v).toLowerCase().includes(valSearch.toLowerCase())) : allVals;
           return (
             <div key={f} style={{ position: "relative" }}>
@@ -534,6 +555,7 @@ function WaterfallChart({ baseline, scenarioData, scenarioName, scenarioColor, r
 }
 
 // ─── COMPARISON TABLE ───────────────────────────────────────────
+const ROW_FIELD_WIDTH = 130;
 function ComparisonTable({ baseline, scenarioOutputs, rowFs, colF, valF, scenarios }) {
   const [sortCol, setSortCol] = useState(null);
   const [sortDir, setSortDir] = useState("asc");
@@ -664,7 +686,7 @@ function ComparisonTable({ baseline, scenarioOutputs, rowFs, colF, valF, scenari
           <thead>
             {/* Top header row: column field values as groups */}
             <tr>
-              <th colSpan={rowFs.length} style={{ ...S.th, borderBottom: "none" }}></th>
+              <th colSpan={rowFs.length} style={{ ...S.th, borderBottom: "none", position: "sticky", left: 0, zIndex: 3, background: C.white }}></th>
               {colKeys.map(ck => (
                 <th key={ck} colSpan={1 + scenarios.length * 2} style={{ ...S.th, textAlign: "center", borderBottom: "none", color: C.brand, fontSize: 11, fontWeight: 700 }}>{String(ck)}</th>
               ))}
@@ -672,7 +694,9 @@ function ComparisonTable({ baseline, scenarioOutputs, rowFs, colF, valF, scenari
             </tr>
             {/* Sub header row: Actuals, Scenarios, Deltas */}
             <tr>
-              {rowFs.map((f, fi) => <th key={f} style={{ ...thClick(f), position: "sticky", left: fi === 0 ? 0 : undefined, zIndex: 2, background: C.white }} onClick={() => toggleSort(f)}>{f.replace(/_/g, " ")}{arrow(f)}</th>)}
+              {rowFs.map((f, fi) => (
+                <th key={f} style={{ ...thClick(f), position: "sticky", left: fi * ROW_FIELD_WIDTH, zIndex: 3, background: C.white, minWidth: ROW_FIELD_WIDTH, maxWidth: ROW_FIELD_WIDTH + 40, boxShadow: fi === rowFs.length - 1 ? "3px 0 6px rgba(0,0,0,0.08)" : "none" }} onClick={() => toggleSort(f)}>{f.replace(/_/g, " ")}{arrow(f)}</th>
+              ))}
               {colKeys.map(ck => (
                 <React.Fragment key={ck}>
                   <th style={thClick("act_" + ck, "right")} onClick={() => toggleSort("act_" + ck)}>Act{arrow("act_" + ck)}</th>
@@ -696,7 +720,9 @@ function ComparisonTable({ baseline, scenarioOutputs, rowFs, colF, valF, scenari
           <tbody>
             {data.slice(0, 80).map((r, i) => (
               <tr key={i} style={{ background: i % 2 === 0 ? "" : C.bg }}>
-                {rowFs.map((f, fi) => <td key={f} style={{ ...S.td, position: fi === 0 ? "sticky" : undefined, left: fi === 0 ? 0 : undefined, zIndex: fi === 0 ? 1 : undefined, background: i % 2 === 0 ? C.white : C.bg }}>{String(r[f] ?? "—")}</td>)}
+                {rowFs.map((f, fi) => (
+                  <td key={f} style={{ ...S.td, position: "sticky", left: fi * ROW_FIELD_WIDTH, zIndex: 1, background: i % 2 === 0 ? C.white : C.bg, minWidth: ROW_FIELD_WIDTH, maxWidth: ROW_FIELD_WIDTH + 40, boxShadow: fi === rowFs.length - 1 ? "3px 0 6px rgba(0,0,0,0.08)" : "none" }}>{String(r[f] ?? "—")}</td>
+                ))}
                 {colKeys.map(ck => (
                   <React.Fragment key={ck}>
                     <td style={{ ...S.td, ...S.mono, textAlign: "right", color: (r["act_" + ck] || 0) >= 0 ? C.green : C.red }}>{fmt(r["act_" + ck])}</td>
@@ -736,7 +762,9 @@ function ComparisonTable({ baseline, scenarioOutputs, rowFs, colF, valF, scenari
     <div style={{ maxHeight: 450, overflow: "auto" }}>
       <table style={{ width: "100%", borderCollapse: "collapse" }}>
         <thead><tr>
-          {rowFs.map((f, fi) => <th key={f} style={{ ...thClick(f), position: "sticky", left: fi === 0 ? 0 : undefined, zIndex: fi === 0 ? 2 : 1, background: C.white }} onClick={() => toggleSort(f)}>{f.replace(/_/g, " ")}{arrow(f)}</th>)}
+          {rowFs.map((f, fi) => (
+            <th key={f} style={{ ...thClick(f), position: "sticky", left: fi * ROW_FIELD_WIDTH, zIndex: 3, background: C.white, minWidth: ROW_FIELD_WIDTH, maxWidth: ROW_FIELD_WIDTH + 40, boxShadow: fi === rowFs.length - 1 ? "3px 0 6px rgba(0,0,0,0.08)" : "none" }} onClick={() => toggleSort(f)}>{f.replace(/_/g, " ")}{arrow(f)}</th>
+          ))}
           <th style={thClick("_total", "right")} onClick={() => toggleSort("_total")}>Actuals{arrow("_total")}</th>
           {scenarios.map(sc => <th key={sc.id} style={thClick("sc_" + sc.name, "right", { color: sortCol === "sc_" + sc.name ? C.brand : sc.color })} onClick={() => toggleSort("sc_" + sc.name)}>{sc.name}{arrow("sc_" + sc.name)}</th>)}
           {scenarios.map(sc => <th key={"v" + sc.id} style={thClick("var_" + sc.name, "right", { color: sortCol === "var_" + sc.name ? C.brand : sc.color })} onClick={() => toggleSort("var_" + sc.name)}>Δ {sc.name}{arrow("var_" + sc.name)}</th>)}
@@ -744,7 +772,9 @@ function ComparisonTable({ baseline, scenarioOutputs, rowFs, colF, valF, scenari
         <tbody>
           {data.slice(0, 120).map((r, i) => (
             <tr key={i} style={{ background: i % 2 === 0 ? "" : C.bg }}>
-              {rowFs.map((f, fi) => <td key={f} style={{ ...S.td, position: fi === 0 ? "sticky" : undefined, left: fi === 0 ? 0 : undefined, zIndex: fi === 0 ? 1 : undefined, background: i % 2 === 0 ? C.white : C.bg }}>{String(r[f] ?? "—")}</td>)}
+              {rowFs.map((f, fi) => (
+                <td key={f} style={{ ...S.td, position: "sticky", left: fi * ROW_FIELD_WIDTH, zIndex: 1, background: i % 2 === 0 ? C.white : C.bg, minWidth: ROW_FIELD_WIDTH, maxWidth: ROW_FIELD_WIDTH + 40, boxShadow: fi === rowFs.length - 1 ? "3px 0 6px rgba(0,0,0,0.08)" : "none" }}>{String(r[f] ?? "—")}</td>
+              ))}
               <td style={{ ...S.td, ...S.mono, textAlign: "right", color: valColor(r._total) }}>{fmt(r._total)}</td>
               {scenarios.map(sc => <td key={sc.id} style={{ ...S.td, ...S.mono, textAlign: "right", color: sc.color }}>{fmt(r["sc_" + sc.name])}</td>)}
               {scenarios.map(sc => {
@@ -755,7 +785,7 @@ function ComparisonTable({ baseline, scenarioOutputs, rowFs, colF, valF, scenari
           ))}
         </tbody>
         <tfoot><tr style={{ background: C.bg }}>
-          <td colSpan={rowFs.length} style={{ ...S.th, fontWeight: 700, color: C.text, borderTop: `2px solid ${C.border}`, position: "sticky", left: 0, background: C.bg, zIndex: 1 }}>Total</td>
+          <td colSpan={rowFs.length} style={{ ...S.th, fontWeight: 700, color: C.text, borderTop: `2px solid ${C.border}`, position: "sticky", left: 0, background: C.bg, zIndex: 2, boxShadow: "3px 0 6px rgba(0,0,0,0.08)" }}>Total</td>
           <td style={{ ...S.th, ...S.mono, textAlign: "right", fontWeight: 700, color: C.text, borderTop: `2px solid ${C.border}` }}>{fmt(data.reduce((s, r) => s + (r._total || 0), 0))}</td>
           {scenarios.map(sc => <td key={sc.id} style={{ ...S.th, ...S.mono, textAlign: "right", fontWeight: 700, color: sc.color, borderTop: `2px solid ${C.border}` }}>{fmt(data.reduce((s, r) => s + (r["sc_" + sc.name] || 0), 0))}</td>)}
           {scenarios.map(sc => {
@@ -1041,7 +1071,7 @@ function RuleFilterTag({ dim, activeVals, baseline, onChange, onRemove }) {
     document.addEventListener("mousedown", h);
     return () => document.removeEventListener("mousedown", h);
   }, []);
-  const allVals = getUniq(baseline, dim);
+  const allVals = mergeWithCalendar(getUniq(baseline, dim), dim);
   const filtered = search ? allVals.filter(v => String(v).toLowerCase().includes(search.toLowerCase())) : allVals;
   return (
     <div ref={ref} style={{ position: "relative" }}>
@@ -1107,6 +1137,26 @@ function RuleFilterAdd({ dims, existingFilters, onAdd }) {
 }
 
 const CALENDAR_YEARS = ["2020","2021","2022","2023","2024","2025","2026","2027"];
+const CALENDAR_FIELDS = new Set(["year", "month", "quarter", "month_year", "month_name", "_period", "period"]);
+const MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+function getCalendarValues(field) {
+  switch (field) {
+    case "year": return CALENDAR_YEARS.map(String);
+    case "month": return Array.from({length: 12}, (_, i) => String(i + 1).padStart(2, "0"));
+    case "month_name": return [...MONTH_NAMES];
+    case "quarter": return CALENDAR_YEARS.flatMap(y => [`Q1 ${y}`, `Q2 ${y}`, `Q3 ${y}`, `Q4 ${y}`]);
+    case "month_year": case "_period": case "period":
+      return CALENDAR_YEARS.flatMap(y =>
+        Array.from({length: 12}, (_, m) => `${y}-${String(m + 1).padStart(2, "0")}`)
+      );
+    default: return null;
+  }
+}
+function mergeWithCalendar(dataVals, field) {
+  const calVals = getCalendarValues(field);
+  if (!calVals) return dataVals;
+  return [...new Set([...dataVals, ...calVals])].sort();
+}
 
 function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetId, relIds }) {
   const dims = useMemo(() => getDimFields(baseline), [baseline]);
@@ -1119,7 +1169,7 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
   const [colF, setColF] = useState("");
   const [valF, setValF] = useState(() => "");
   const [filters, setFilters] = useState({});
-  const [newRule, setNewRule] = useState({ name: "", type: "multiplier", factor: 1.05, offset: 0, filters: {}, periodFrom: "", periodTo: "" });
+  const [newRule, setNewRule] = useState({ name: "", type: "multiplier", factor: 1.05, offset: 0, filters: {}, periodFrom: "", periodTo: "", distribution: "use_base" });
   const [ruleFilterFields, setRuleFilterFields] = useState([]);
   const [ruleFilterSearch, setRuleFilterSearch] = useState("");
   const [ruleFilterOpen, setRuleFilterOpen] = useState(false);
@@ -1443,6 +1493,7 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
                     <span style={{ fontSize: 12, color: isEditing ? editSc.color : C.textMuted }}>{isEditing ? "▾" : "▸"}</span>
                     <span style={{ fontWeight: 600, fontSize: 12 }}>{rule.name}</span>
                     <span style={S.badge(rule.type === "multiplier" ? C.brand : C.amber)}>{rule.type === "multiplier" ? `×${rule.factor}` : `+${fmt(rule.offset)}`}</span>
+                    {rule.type === "offset" && <span style={S.badge(rule.distribution === "equal" ? C.purple : C.textMuted)}>{rule.distribution === "equal" ? "⚖️ equal" : "📊 prop."}</span>}
                     {rule.periodFrom && <span style={{ fontSize: 10, color: C.textMuted }}>{rule.periodFrom} → {rule.periodTo || "∞"}</span>}
                     {Object.entries(rule.filters || {}).filter(([, v]) => v && (!Array.isArray(v) || v.length > 0)).map(([k, v]) =>
                       <span key={k} style={S.badge(C.purple)}>{k}: {Array.isArray(v) ? (v.length > 2 ? v.slice(0, 2).join(", ") + ` +${v.length - 2}` : v.join(", ")) : v}</span>
@@ -1494,6 +1545,22 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
                         </datalist>
                       </div>
                     </div>
+                    {/* Distribution mode (only for offset rules) */}
+                    {rule.type === "offset" && (
+                      <div style={{ marginTop: 8 }}>
+                        <label style={{ fontSize: 10, color: C.textMuted, fontWeight: 600 }}>Distribution</label>
+                        <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+                          <button onClick={() => updateRule(rule.id, { distribution: "use_base" })}
+                            style={{ ...S.btn(rule.distribution !== "equal" ? "primary" : "ghost", true), flex: 1, textAlign: "center" }}>
+                            📊 Proportional
+                          </button>
+                          <button onClick={() => updateRule(rule.id, { distribution: "equal" })}
+                            style={{ ...S.btn(rule.distribution === "equal" ? "primary" : "ghost", true), flex: 1, textAlign: "center" }}>
+                            ⚖️ Equal split
+                          </button>
+                        </div>
+                      </div>
+                    )}
                     {/* Inline filter editor for existing rule */}
                     <div style={{ marginTop: 8 }}>
                       <div style={{ fontSize: 10, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 4, fontWeight: 600 }}>Filters</div>
@@ -1562,6 +1629,23 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
               </div>
             </div>
 
+            {/* Distribution mode (only for offset rules) */}
+            {newRule.type === "offset" && (
+              <div style={{ marginTop: 10 }}>
+                <label style={{ fontSize: 10, color: C.textMuted, fontWeight: 600 }}>Distribution</label>
+                <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+                  <button onClick={() => setNewRule(p => ({ ...p, distribution: "use_base" }))}
+                    style={{ ...S.btn(newRule.distribution !== "equal" ? "primary" : "ghost", true), flex: 1, textAlign: "center" }}>
+                    📊 Proportional (follow baseline)
+                  </button>
+                  <button onClick={() => setNewRule(p => ({ ...p, distribution: "equal" }))}
+                    style={{ ...S.btn(newRule.distribution === "equal" ? "primary" : "ghost", true), flex: 1, textAlign: "center" }}>
+                    ⚖️ Equal (flat split)
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Rule filters */}
             <div style={{ marginTop: 10 }} ref={ruleFilterRef}>
               <div style={{ fontSize: 10, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 5, fontWeight: 600 }}>Rule Filters</div>
@@ -1571,7 +1655,7 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
                   const isArr = Array.isArray(vals);
                   const activeVals = isArr ? vals : (vals ? [vals] : []);
                   const expanded = ruleFilterExpanded === dim;
-                  const dimVals = getUniq(baseline, dim);
+                  const dimVals = mergeWithCalendar(getUniq(baseline, dim), dim);
                   return (
                     <div key={dim} style={{ position: "relative" }}>
                       <span onClick={() => { setRuleFilterExpanded(expanded ? null : dim); setRuleValSearch(""); }}
@@ -1740,9 +1824,16 @@ function ChatPanel({ baseline, scenarios, setScenarios, setActiveTab, datasetId 
             next[next.length - 1] = { ...next[next.length - 1], content: next[next.length - 1].content + event.text };
             return next;
           });
+        } else if (event.type === "scenario_rules") {
+          // New plural batch event
+          const rules = (event.rules || []).map((r, i) => ({ ...r, id: Date.now() + i }));
+          if (event.base_config) pendingBaseConfig = event.base_config;
+          if (event.scenario_id) pendingExistingScenarioId = event.scenario_id;
+          if (event.scenario_name) pendingScenarioName = event.scenario_name;
+          pendingRules.push(...rules);
         } else if (event.type === "scenario_rule") {
-          // Extract base_config from the rule (it's a scenario-level field)
-          const { base_config, ...ruleWithoutBaseConfig } = event.rule;
+          // Backward compat for old singular event
+          const { base_config, ...ruleWithoutBaseConfig } = event.rule || {};
           if (base_config) pendingBaseConfig = base_config;
           if (event.scenario_id) pendingExistingScenarioId = event.scenario_id;
           if (event.scenario_name) pendingScenarioName = event.scenario_name;

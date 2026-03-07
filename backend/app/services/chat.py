@@ -34,7 +34,7 @@ from app.services import storage as storage_svc
 logger = logging.getLogger(__name__)
 
 # Max tool-use round-trips per chat turn
-_MAX_TOOL_ROUNDS = 3
+_MAX_TOOL_ROUNDS = 5
 
 # Claude model for chat
 _CHAT_MODEL = "claude-sonnet-4-6"
@@ -85,78 +85,64 @@ TOOLS = [
         },
     },
     {
-        "name": "create_scenario_rule",
+        "name": "create_scenario_rules",
         "description": (
-            "Create a what-if scenario rule.  Returns the rule object "
-            "plus an impact preview (rows affected, estimated delta).  "
-            "Use this when the user asks 'what if costs increase by X%', "
-            "'add 100K to budget', or 'project next year based on this year'.  "
-            "IMPORTANT: For expense/cost categories where amounts are stored as negative values: "
+            "Create one or more what-if scenario rules in a single call. "
+            "Can create a new scenario with all rules at once, or add multiple rules to an existing scenario. "
+            "ALWAYS submit ALL rules in a single call — do NOT split across multiple calls. "
+            "IMPORTANT: For expense/cost categories stored as negative values: "
             "offset rules must NEGATE the amount. 'Increase costs by 300K' → offset: -300000. "
             "'Reduce costs by 300K' → offset: +300000. Multipliers handle sign automatically."
         ),
         "input_schema": {
             "type": "object",
-            "required": ["name", "type"],
+            "required": ["rules"],
             "properties": {
-                "name": {
-                    "type": "string",
-                    "description": "Short human-readable name for this rule",
-                },
-                "type": {
-                    "type": "string",
-                    "enum": ["multiplier", "offset"],
-                },
-                "factor": {
-                    "type": "number",
-                    "description": "Multiplication factor (e.g. 1.05 = +5%).  Required when type=multiplier.",
-                },
-                "offset": {
-                    "type": "number",
-                    "description": "Total amount to add/subtract.  Required when type=offset.",
-                },
-                "filters": {
-                    "type": "object",
-                    "description": "Restrict rule to matching rows.  Keys are column names; values are lists of allowed values.",
-                    "additionalProperties": {
-                        "type": "array",
-                        "items": {},
-                    },
-                },
-                "periodFrom": {
-                    "type": "string",
-                    "description": "Start period (YYYY-MM or YYYY-MM-DD).  Optional.",
-                },
-                "periodTo": {
-                    "type": "string",
-                    "description": "End period (YYYY-MM or YYYY-MM-DD).  Optional.",
-                },
                 "scenario_id": {
                     "type": "string",
-                    "description": (
-                        "ID of an existing scenario to add this rule to. "
-                        "Use list_scenarios first to find the right ID. "
-                        "If omitted, a new scenario will be created."
-                    ),
+                    "description": "ID of existing scenario to add rules to. Omit to create new.",
                 },
                 "scenario_name": {
                     "type": "string",
-                    "description": (
-                        "Name for the new scenario (only used when scenario_id is omitted). "
-                        "Give it a short descriptive name like 'Revenue +10% 2026' or 'Cost Reduction Plan'."
-                    ),
+                    "description": "Name for a new scenario (ignored if scenario_id is set).",
                 },
                 "base_config": {
                     "type": "object",
-                    "description": (
-                        "Scenario baseline configuration. "
-                        "Always include base_year when creating a new scenario. "
-                        "base_year (integer, e.g. 2025): the year whose actuals serve as the historical template."
-                    ),
+                    "description": "Baseline config for new scenarios. Must include base_year.",
                     "properties": {
-                        "base_year": {
-                            "type": "integer",
-                            "description": "The year to use as the baseline template (e.g. 2025). Required for new scenarios.",
+                        "source": {"type": "string", "enum": ["actuals", "scenario"]},
+                        "base_year": {"type": "integer", "description": "REQUIRED baseline year (e.g. 2025)"},
+                        "source_scenario_id": {"type": "string"},
+                    },
+                },
+                "rules": {
+                    "type": "array",
+                    "description": "One or more rules to create. Submit ALL rules in one call.",
+                    "items": {
+                        "type": "object",
+                        "required": ["name", "type"],
+                        "properties": {
+                            "name": {"type": "string", "description": "Rule name"},
+                            "type": {"type": "string", "enum": ["multiplier", "offset"]},
+                            "factor": {"type": "number", "description": "For multiplier rules (e.g. 1.05 = +5%)"},
+                            "offset": {"type": "number", "description": "For offset rules (total amount). Negative for cost increases."},
+                            "distribution": {
+                                "type": "string",
+                                "enum": ["use_base", "equal"],
+                                "description": (
+                                    "How to distribute an offset across matching rows. "
+                                    "'use_base' = proportional to baseline values (default). "
+                                    "'equal' = flat even split across all matching periods. "
+                                    "Only relevant for offset rules."
+                                ),
+                            },
+                            "filters": {
+                                "type": "object",
+                                "description": "Filter to specific rows. Keys are column names, values are arrays.",
+                                "additionalProperties": {"type": "array", "items": {}},
+                            },
+                            "periodFrom": {"type": "string", "description": "Start period YYYY-MM"},
+                            "periodTo": {"type": "string", "description": "End period YYYY-MM"},
                         },
                     },
                 },
@@ -325,8 +311,15 @@ async def execute_tool(
 
     if tool_name == "query_data":
         return _tool_query_data(tool_input, table_name, baseline_df=baseline_df)
+    elif tool_name == "create_scenario_rules":
+        return _tool_create_scenario_rules(tool_input, table_name, baseline_df=baseline_df)
     elif tool_name == "create_scenario_rule":
-        return _tool_create_scenario_rule(tool_input, table_name, baseline_df=baseline_df)
+        # Backward compat: wrap singular call into array format
+        wrapped = dict(tool_input)
+        if "rules" not in wrapped:
+            wrapped["rules"] = [{k: v for k, v in tool_input.items()
+                                 if k not in ("scenario_id", "scenario_name", "base_config")}]
+        return _tool_create_scenario_rules(wrapped, table_name, baseline_df=baseline_df)
     elif tool_name == "list_dimension_values":
         return _tool_list_dimension_values(
             tool_input, table_name, dataset_id=dataset_id, baseline_df=baseline_df
@@ -394,90 +387,92 @@ def _tool_query_data(inp: dict, table_name: str, baseline_df: Any = None) -> dic
     }
 
 
-def _tool_create_scenario_rule(inp: dict, table_name: str, baseline_df: Any = None) -> dict:
-    """Build a scenario rule dict and compute an impact preview."""
+def _tool_create_scenario_rules(inp: dict, table_name: str, baseline_df: Any = None) -> dict:
+    """Build multiple scenario rules and compute an impact preview for each."""
     import polars as pl
 
-    rule: dict[str, Any] = {
-        "id": None,  # assigned on persist
-        "name": inp.get("name", "Unnamed rule"),
-        "type": inp.get("type", "multiplier"),
-        "filters": inp.get("filters") or {},
-    }
-    if rule["type"] == "multiplier":
-        rule["factor"] = float(inp.get("factor", 1.0))
+    rules_input = inp.get("rules", [])
+    if not rules_input:
+        return {"error": "No rules provided"}
+
+    if baseline_df is not None:
+        df = baseline_df
     else:
-        rule["offset"] = float(inp.get("offset", 0.0))
+        df = storage_svc.read_dataset(sync_engine, table_name)
 
-    if inp.get("periodFrom"):
-        rule["periodFrom"] = inp["periodFrom"]
-    if inp.get("periodTo"):
-        rule["periodTo"] = inp["periodTo"]
-    if inp.get("base_config"):
-        rule["base_config"] = inp["base_config"]
+    built_rules = []
+    total_delta = 0.0
 
-    # Impact preview: count affected rows and estimate delta
-    try:
-        # Use baseline (with dimension columns) when available
-        if baseline_df is not None:
-            df = baseline_df
-        else:
-            df = storage_svc.read_dataset(sync_engine, table_name)
-
-        mask = pl.lit(True)
-        for col_name, values in rule.get("filters", {}).items():
-            if col_name in df.columns and isinstance(values, list):
-                str_vals = [str(v) for v in values]
-                mask = mask & pl.col(col_name).cast(pl.Utf8).is_in(str_vals)
-
-        matched = df.filter(mask)
-        affected_rows = len(matched)
-
-        # Try to estimate delta on the first numeric column
-        numeric_cols = [
-            c for c in matched.columns
-            if matched[c].dtype in (pl.Float32, pl.Float64, pl.Int32, pl.Int64)
-               and c != "_row_id"
-        ]
-        estimated_delta = None
-        if numeric_cols:
-            col = numeric_cols[0]
-            current_sum = float(matched[col].cast(pl.Float64).sum())
-            if rule["type"] == "multiplier":
-                estimated_delta = current_sum * (rule["factor"] - 1)
-            else:
-                estimated_delta = rule["offset"]
-
-        preview: dict[str, Any] = {
-            "affected_rows": affected_rows,
-            "total_rows": len(df),
-            "estimated_delta": round(estimated_delta, 2) if estimated_delta is not None else None,
+    for rule_inp in rules_input:
+        rule: dict[str, Any] = {
+            "id": None,
+            "name": rule_inp.get("name", "Unnamed rule"),
+            "type": rule_inp.get("type", "multiplier"),
+            "filters": rule_inp.get("filters") or {},
+            "distribution": rule_inp.get("distribution", "use_base"),
         }
-        # Validation warnings
-        total = len(df)
-        if total > 0 and affected_rows == total and rule.get("filters"):
-            preview["warning"] = (
-                f"WARNING: The filter matched ALL {total} rows. "
-                "This means the filter values may not exist in the data. "
-                "The change will apply to the entire dataset."
-            )
-        elif total > 0 and affected_rows == total and not rule.get("filters"):
-            preview["warning"] = (
-                f"WARNING: No filter specified — this rule will apply to ALL {total} rows. "
-                "For financial data, you almost always want to filter by a category "
-                "(e.g. revenue, personnel costs, materials)."
-            )
-        elif affected_rows == 0:
-            preview["warning"] = (
-                "WARNING: No rows matched the filter. The rule will have no effect. "
-                "Check that the filter column and values are correct."
-            )
-        rule["_preview"] = preview
-    except Exception as exc:
-        logger.warning("Impact preview failed: %s", exc)
-        rule["_preview"] = {"error": str(exc)}
+        if rule["type"] == "multiplier":
+            rule["factor"] = float(rule_inp.get("factor", 1.0))
+        else:
+            rule["offset"] = float(rule_inp.get("offset", 0.0))
+        if rule_inp.get("periodFrom"):
+            rule["periodFrom"] = rule_inp["periodFrom"]
+        if rule_inp.get("periodTo"):
+            rule["periodTo"] = rule_inp["periodTo"]
 
-    return rule
+        try:
+            mask = pl.lit(True)
+            for col_name, values in rule.get("filters", {}).items():
+                if col_name in df.columns and isinstance(values, list):
+                    str_vals = [str(v) for v in values]
+                    mask = mask & pl.col(col_name).cast(pl.Utf8).is_in(str_vals)
+
+            matched = df.filter(mask)
+            affected = len(matched)
+            total_rows = len(df)
+
+            numeric_cols = [
+                c for c in matched.columns
+                if matched[c].dtype in (pl.Float32, pl.Float64, pl.Int32, pl.Int64)
+                and c != "_row_id"
+            ]
+            estimated_delta = None
+            if numeric_cols:
+                col = numeric_cols[0]
+                current_sum = float(matched[col].cast(pl.Float64).sum())
+                if rule["type"] == "multiplier":
+                    estimated_delta = current_sum * (rule.get("factor", 1.0) - 1)
+                else:
+                    estimated_delta = rule.get("offset", 0.0)
+
+            preview: dict[str, Any] = {
+                "affected_rows": affected,
+                "total_rows": total_rows,
+                "estimated_delta": round(estimated_delta, 2) if estimated_delta is not None else None,
+            }
+            if total_rows > 0 and affected == total_rows and rule.get("filters"):
+                preview["warning"] = f"Filter matched ALL {total_rows} rows — values may not exist in data"
+            elif affected == 0:
+                preview["warning"] = "No rows matched — rule will have no effect"
+            elif total_rows > 0 and affected == total_rows and not rule.get("filters"):
+                preview["warning"] = f"No filter — rule applies to ALL {total_rows} rows"
+            rule["_preview"] = preview
+            if estimated_delta:
+                total_delta += estimated_delta
+        except Exception as exc:
+            logger.warning("Impact preview failed for rule %r: %s", rule.get("name"), exc)
+            rule["_preview"] = {"error": str(exc)}
+
+        built_rules.append(rule)
+
+    return {
+        "rules": built_rules,
+        "rule_count": len(built_rules),
+        "total_estimated_delta": round(total_delta, 2),
+        "base_config": inp.get("base_config"),
+        "scenario_id": inp.get("scenario_id"),
+        "scenario_name": inp.get("scenario_name"),
+    }
 
 
 def _tool_list_dimension_values(
@@ -571,6 +566,7 @@ def _tool_list_scenarios(dataset_id: str) -> dict:
                             "type": r.get("type", ""),
                             "factor": r.get("factor"),
                             "offset": r.get("offset"),
+                            "distribution": r.get("distribution", "use_base"),
                             "filters": r.get("filters", {}),
                             "periodFrom": r.get("periodFrom"),
                             "periodTo": r.get("periodTo"),
@@ -719,10 +715,21 @@ def _build_system_prompt_from_context(context: str) -> str:
         "  * If there's no clear grouping column, ASK the user to specify.\n"
         "  * After creating a rule, check _preview warnings in the tool result and explain to the\n"
         "    user if the filter matched all rows or zero rows — that indicates something is wrong.\n"
+        "- RULE CREATION: ALWAYS submit ALL rules in a single create_scenario_rules call.\n"
+        "  Do NOT create rules one at a time across multiple calls.\n"
+        "  Put all rules in the 'rules' array of one create_scenario_rules call.\n"
+        "- RULE DISTRIBUTION: Each offset rule has a distribution mode:\n"
+        "  * 'use_base' (proportional, DEFAULT): distributes the offset weighted by each row's\n"
+        "    share of the total absolute baseline. Months with larger amounts get proportionally more.\n"
+        "    Example: 300K on revenue → Jan (30%% of annual) gets 90K, Feb (8%%) gets 24K.\n"
+        "  * 'equal': splits the offset evenly across all matching periods.\n"
+        "    Example: 300K across 12 months → each month gets exactly 25K.\n"
+        "  * If the user doesn't specify, use 'use_base' by default.\n"
+        "  * Multiplier rules apply uniformly — distribution only matters for offset rules.\n"
         "- SCENARIO MANAGEMENT:\n"
         "  * Before creating a new scenario, call list_scenarios to check what already exists.\n"
         "  * If the user says 'also increase X', 'add another rule', or similar → add the rule to\n"
-        "    the EXISTING scenario by passing scenario_id to create_scenario_rule.\n"
+        "    the EXISTING scenario by passing scenario_id to create_scenario_rules.\n"
         "  * Only create a brand-new scenario when the user explicitly asks for one.\n"
         "  * Every scenario MUST have a base_year in its base_config. When creating a new scenario,\n"
         "    ALWAYS include base_config with base_year set to the year the user wants as baseline.\n"
@@ -894,13 +901,14 @@ async def stream_chat(
                     "result": result,
                 })
 
-                # Emit scenario_rule event for create_scenario_rule
-                if tu["name"] == "create_scenario_rule" and "error" not in result:
+                # Emit scenario_rules event for create_scenario_rules (and backward compat singular)
+                if tu["name"] in ("create_scenario_rules", "create_scenario_rule") and "error" not in result:
                     yield _sse_event({
-                        "type": "scenario_rule",
-                        "rule": result,
-                        "scenario_id": tu["input"].get("scenario_id"),  # null=new, str=existing
-                        "scenario_name": tu["input"].get("scenario_name"),  # optional name for new scenario
+                        "type": "scenario_rules",
+                        "rules": result.get("rules", []),
+                        "scenario_id": result.get("scenario_id"),
+                        "scenario_name": result.get("scenario_name"),
+                        "base_config": result.get("base_config"),
                     })
 
                 # Emit scenario_copied event for copy_scenario
