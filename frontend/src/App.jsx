@@ -1301,27 +1301,62 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
       const futurePeriods = [...ruleTargetPeriods].filter(p => !existingPeriods.has(p)).sort();
 
       if (futurePeriods.length > 0 && expandedBaseline.length > 0) {
+        // Build averaged template lazily — used when a base year month has no data.
+        const _skipFields = new Set([
+          "_period", "period", "month_year", "_data_source", "_row_id",
+          "_baseline_period", "_is_comparison_base", "_year", "_month",
+          "year", "month", "month_name", "quarter",
+          effectiveValF, `baseline_${effectiveValF}`,
+        ]);
+        const _dimKey = (r) => {
+          const parts = [];
+          for (const k of Object.keys(r)) {
+            if (!_skipFields.has(k)) parts.push(`${k}=${r[k] ?? ""}`);
+          }
+          return parts.sort().join("|");
+        };
+        let averagedTemplateRows = null;
+        const _getAveragedRows = () => {
+          if (averagedTemplateRows !== null) return averagedTemplateRows;
+          const groups = {};
+          for (const r of expandedBaseline) {
+            const dk = _dimKey(r);
+            if (!groups[dk]) groups[dk] = { sample: r, values: [] };
+            groups[dk].values.push(+(r[effectiveValF]) || 0);
+          }
+          averagedTemplateRows = [];
+          for (const { sample, values } of Object.values(groups)) {
+            const avg = values.reduce((s, v) => s + v, 0) / values.length;
+            averagedTemplateRows.push({ ...sample, [effectiveValF]: Math.round(avg * 100) / 100 });
+          }
+          return averagedTemplateRows;
+        };
+
         for (const fp of futurePeriods) {
           const targetMonth = fp.slice(5, 7);
-          // Use base_year for exact month mapping; skip if that month has no actual data
+          const newYear = fp.slice(0, 4);
           const matchingBasePeriod = baseYear ? `${baseYear}-${targetMonth}` : null;
-          if (!matchingBasePeriod || !existingPeriods.has(matchingBasePeriod)) continue;
-
-          const templateRows = expandedBaseline.filter(r =>
-            (r._period || r.period || r.month_year || "") === matchingBasePeriod
-          );
+          let templateRows;
+          let baselinePeriodRef;
+          if (matchingBasePeriod && existingPeriods.has(matchingBasePeriod)) {
+            templateRows = expandedBaseline.filter(r =>
+              (r._period || r.period || r.month_year || "") === matchingBasePeriod
+            );
+            baselinePeriodRef = matchingBasePeriod;
+          } else {
+            templateRows = _getAveragedRows();
+            baselinePeriodRef = "_averaged";
+          }
           for (const tr of templateRows) {
-            const newYear = fp.slice(0, 4);
-            const newMonth = fp.slice(5, 7);
             expandedBaseline.push({
               ...tr,
               _period: fp, period: fp, month_year: fp,
               year: newYear, _year: newYear,
-              month: newMonth, _month: newMonth,
-              month_name: MONTH_NAMES[parseInt(newMonth, 10) - 1] || tr.month_name,
-              quarter: `Q${Math.ceil(parseInt(newMonth, 10) / 3)} ${newYear}`,
+              month: targetMonth, _month: targetMonth,
+              month_name: MONTH_NAMES[parseInt(targetMonth, 10) - 1] || tr.month_name,
+              quarter: `Q${Math.ceil(parseInt(targetMonth, 10) / 3)} ${newYear}`,
               _data_source: "projected",
-              _baseline_period: matchingBasePeriod,
+              _baseline_period: baselinePeriodRef,
             });
           }
         }
@@ -1407,17 +1442,45 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
       const rows = [...scBase];
       const addedPeriods = new Set(rows.map(r => r._period || r.period || r.month_year || ""));
 
-      // Add year-shifted rows for projected periods
+      // Add year-shifted rows for projected periods (including averaged ones)
+      const _skipF = new Set([
+        "_period", "period", "month_year", "_data_source", "_row_id",
+        "_baseline_period", "_is_comparison_base", "_year", "_month",
+        "year", "month", "month_name", "quarter",
+        effectiveValF, `baseline_${effectiveValF}`,
+      ]);
+      const _dkCB = (r) => {
+        const parts = [];
+        for (const k of Object.keys(r)) { if (!_skipF.has(k)) parts.push(`${k}=${r[k] ?? ""}`); }
+        return parts.sort().join("|");
+      };
+      // Precompute averaged scBase rows (lazy)
+      let _avgBaseRows = null;
+      const _getAvgBaseRows = () => {
+        if (_avgBaseRows !== null) return _avgBaseRows;
+        const groups = {};
+        for (const r of scBase) {
+          const dk = _dkCB(r);
+          if (!groups[dk]) groups[dk] = { sample: r, values: [] };
+          groups[dk].values.push(+(r[effectiveValF]) || 0);
+        }
+        _avgBaseRows = Object.values(groups).map(({ sample, values }) => {
+          const avg = values.reduce((s, v) => s + v, 0) / values.length;
+          return { ...sample, [effectiveValF]: Math.round(avg * 100) / 100 };
+        });
+        return _avgBaseRows;
+      };
+
       for (const row of scRows) {
         if (row._data_source !== "projected" || !row._baseline_period) continue;
         const projPeriod = row._period || row.period || row.month_year || "";
         if (addedPeriods.has(projPeriod)) continue;
-        const baseRows = scBase.filter(r =>
-          (r._period || r.period || r.month_year || "") === row._baseline_period
-        );
+        const newYear = projPeriod.slice(0, 4);
+        const newMonth = projPeriod.slice(5, 7);
+        const baseRows = row._baseline_period === "_averaged"
+          ? _getAvgBaseRows()
+          : scBase.filter(r => (r._period || r.period || r.month_year || "") === row._baseline_period);
         for (const br of baseRows) {
-          const newYear = projPeriod.slice(0, 4);
-          const newMonth = projPeriod.slice(5, 7);
           rows.push({
             ...br,
             _period: projPeriod, period: projPeriod, month_year: projPeriod,
