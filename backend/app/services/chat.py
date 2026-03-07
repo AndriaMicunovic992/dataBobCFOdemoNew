@@ -139,40 +139,24 @@ TOOLS = [
                         "If omitted, a new scenario will be created."
                     ),
                 },
+                "scenario_name": {
+                    "type": "string",
+                    "description": (
+                        "Name for the new scenario (only used when scenario_id is omitted). "
+                        "Give it a short descriptive name like 'Revenue +10% 2026' or 'Cost Reduction Plan'."
+                    ),
+                },
                 "base_config": {
                     "type": "object",
                     "description": (
-                        "Optional future-period projection configuration.  "
-                        "Use when the user wants to project actuals into a future year.  "
-                        "method: 'copy_year' (copy source_year rows to target_year), "
-                        "'average' (average actuals then project to target_periods), "
-                        "'last_n_months' (average last N months then project), 'none'."
+                        "Scenario baseline configuration. "
+                        "Always include base_year when creating a new scenario. "
+                        "base_year (integer, e.g. 2025): the year whose actuals serve as the historical template."
                     ),
                     "properties": {
-                        "method": {
-                            "type": "string",
-                            "enum": ["copy_year", "average", "last_n_months", "none"],
-                        },
-                        "source_year": {
+                        "base_year": {
                             "type": "integer",
-                            "description": "Year to copy from (copy_year method)",
-                        },
-                        "target_year": {
-                            "type": "integer",
-                            "description": "Year to project into",
-                        },
-                        "growth_pct": {
-                            "type": "number",
-                            "description": "Additional growth percentage on top of projection (e.g. 5 = +5%)",
-                        },
-                        "last_n": {
-                            "type": "integer",
-                            "description": "Number of trailing months to average (last_n_months method)",
-                        },
-                        "target_periods": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Explicit list of YYYY-MM target periods to generate",
+                            "description": "The year to use as the baseline template (e.g. 2025). Required for new scenarios.",
                         },
                     },
                 },
@@ -212,6 +196,28 @@ TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {},
+        },
+    },
+    {
+        "name": "copy_scenario",
+        "description": (
+            "Duplicate an existing scenario (copies all rules and base_config) under a new name. "
+            "Use when the user says 'copy', 'duplicate', or 'clone' a scenario. "
+            "Always call list_scenarios first to get the source scenario ID."
+        ),
+        "input_schema": {
+            "type": "object",
+            "required": ["source_scenario_id", "new_name"],
+            "properties": {
+                "source_scenario_id": {
+                    "type": "string",
+                    "description": "ID of the scenario to copy",
+                },
+                "new_name": {
+                    "type": "string",
+                    "description": "Name for the new copied scenario",
+                },
+            },
         },
     },
 ]
@@ -327,6 +333,8 @@ async def execute_tool(
         )
     elif tool_name == "list_scenarios":
         return _tool_list_scenarios(dataset_id)
+    elif tool_name == "copy_scenario":
+        return _tool_copy_scenario(tool_input)
     else:
         return {"error": f"Unknown tool: {tool_name}"}
 
@@ -573,6 +581,36 @@ def _tool_list_scenarios(dataset_id: str) -> dict:
                     "base_config": row[4] if row[4] else None,
                 })
             return {"scenarios": scenarios, "count": len(scenarios)}
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+def _tool_copy_scenario(inp: dict) -> dict:
+    """Duplicate an existing scenario under a new name."""
+    import uuid as _uuid
+    from sqlalchemy import text
+
+    source_id = inp.get("source_scenario_id", "")
+    new_name = inp.get("new_name", "Copy")
+    try:
+        with sync_engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT id FROM scenarios WHERE id = :id"),
+                {"id": source_id},
+            ).fetchone()
+            if not row:
+                return {"error": f"Scenario {source_id!r} not found"}
+            new_id = _uuid.uuid4().hex
+            conn.execute(
+                text("""
+                    INSERT INTO scenarios (id, name, dataset_id, rules, color, base_config, created_at, updated_at)
+                    SELECT :new_id, :new_name, dataset_id, rules, color, base_config, NOW(), NOW()
+                    FROM scenarios WHERE id = :source_id
+                """),
+                {"new_id": new_id, "new_name": new_name, "source_id": source_id},
+            )
+            conn.commit()
+            return {"id": new_id, "name": new_name, "copied_from": source_id}
     except Exception as exc:
         return {"error": str(exc)}
 
@@ -862,6 +900,16 @@ async def stream_chat(
                         "type": "scenario_rule",
                         "rule": result,
                         "scenario_id": tu["input"].get("scenario_id"),  # null=new, str=existing
+                        "scenario_name": tu["input"].get("scenario_name"),  # optional name for new scenario
+                    })
+
+                # Emit scenario_copied event for copy_scenario
+                if tu["name"] == "copy_scenario" and "error" not in result:
+                    yield _sse_event({
+                        "type": "scenario_copied",
+                        "id": result.get("id"),
+                        "name": result.get("name"),
+                        "copied_from": result.get("copied_from"),
                     })
 
                 tool_results.append({
