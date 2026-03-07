@@ -199,17 +199,20 @@ function applyRules(data, rules, valF = "amount") {
     });
     if (rule.type === "multiplier") {
       const distribution = rule.distribution || "use_base";
+      console.log("[DISTRIBUTION DEBUG multiplier]", { ruleName: rule.name, distribution, rawDistribution: rule.distribution, factor: rule.factor, matchedRows: matchIdx.length });
       if (distribution === "equal") {
         // Equal: compute total delta then divide evenly across all matched rows
         const totalBase = matchIdx.reduce((s, i) => s + Math.abs(+res[i][valF] || 0), 0);
         const totalDelta = totalBase * (rule.factor - 1);
         const share = matchIdx.length > 0 ? totalDelta / matchIdx.length : 0;
+        console.log("[DISTRIBUTION] EQUAL multiplier: totalBase =", totalBase, "totalDelta =", totalDelta, "share =", share);
         for (const i of matchIdx) {
           const cur = +res[i][valF] || 0;
           res[i] = { ...res[i], [valF]: Math.round((cur + share) * 100) / 100 };
         }
       } else {
         // Proportional (default): multiply each row by factor
+        console.log("[DISTRIBUTION] PROPORTIONAL multiplier: applying factor", rule.factor, "to", matchIdx.length, "rows");
         for (const i of matchIdx) {
           const cur = +res[i][valF] || 0;
           res[i] = { ...res[i], [valF]: Math.round(cur * rule.factor * 100) / 100 };
@@ -217,9 +220,11 @@ function applyRules(data, rules, valF = "amount") {
       }
     } else if (rule.type === "offset" && matchIdx.length > 0) {
       const distribution = rule.distribution || "use_base";
+      console.log("[DISTRIBUTION DEBUG]", { ruleName: rule.name, distribution, rawDistribution: rule.distribution, offset: rule.offset, matchedRows: matchIdx.length });
       if (distribution === "equal") {
         // Equal: divide total offset evenly across all matching rows
         const share = rule.offset / matchIdx.length;
+        console.log("[DISTRIBUTION] EQUAL offset: share per row =", share);
         for (const i of matchIdx) {
           const cur = +res[i][valF] || 0;
           res[i] = { ...res[i], [valF]: Math.round((cur + share) * 100) / 100 };
@@ -227,6 +232,7 @@ function applyRules(data, rules, valF = "amount") {
       } else {
         // Proportional (use_base): distribute based on each row's share of total |value|
         const totalBase = matchIdx.reduce((s, i) => s + Math.abs(+res[i][valF] || 0), 0);
+        console.log("[DISTRIBUTION] PROPORTIONAL offset: totalBase =", totalBase);
         if (totalBase === 0) {
           // All base values are 0 — fall back to equal
           const share = rule.offset / matchIdx.length;
@@ -1296,6 +1302,7 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
         }
       }
 
+      console.log("[scOutputs] Applying rules for", sc.name, ":", sc.rules.map(r => ({ name: r.name, type: r.type, distribution: r.distribution, offset: r.offset, factor: r.factor })));
       const result = applyRules(expandedBaseline, sc.rules, effectiveValF);
       // Apply ALL filters (including calendar/display) to the final output
       o[sc.name] = applyFilters(result, filters);
@@ -1346,7 +1353,10 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
     setRuleFilterFields([]);
   }
   function rmRule(rid) { setScenarios(p => p.map(s => s.id !== editId ? s : { ...s, rules: s.rules.filter(r => r.id !== rid) })); }
-  function updateRule(rid, updates) { setScenarios(p => p.map(s => s.id !== editId ? s : { ...s, rules: s.rules.map(r => r.id === rid ? { ...r, ...updates } : r) })); }
+  function updateRule(rid, updates) {
+    console.log("[updateRule]", rid, updates);
+    setScenarios(p => p.map(s => s.id !== editId ? s : { ...s, rules: s.rules.map(r => r.id === rid ? { ...r, ...updates } : r) }));
+  }
   const [editingRuleId, setEditingRuleId] = useState(null);
 
   // Safe numeric coercion: handles JS numbers AND numeric strings (e.g. from Decimal→JSON)
@@ -1751,6 +1761,40 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
 
             <button style={{ ...S.btn("primary"), marginTop: 12 }} onClick={addRule} disabled={!newRule.name}>Add Rule</button>
           </div>
+
+          {/* TEMP DEBUG: Distribution calculation panel */}
+          {editSc && active.has(editSc.id) && scOutputs[editSc.name] && editSc.rules.some(r => r.type === "offset" || r.type === "multiplier") && (
+            <div style={{ background: "#fff8e1", borderRadius: 8, padding: 10, marginTop: 10, border: "1px solid #ffd54f", fontSize: 11 }}>
+              <div style={{ fontWeight: 700, marginBottom: 6 }}>🔍 Distribution Debug</div>
+              {editSc.rules.map(rule => {
+                const dist = rule.distribution || "use_base";
+                const output = scOutputs[editSc.name] || [];
+                const base = comparisonBaselines[editSc.name] || [];
+                const periods = [...new Set(output.map(r => r._period).filter(Boolean))].sort().slice(0, 6);
+                return (
+                  <div key={rule.id} style={{ marginBottom: 6, paddingBottom: 6, borderBottom: "1px solid #ffe082" }}>
+                    <span style={{ fontWeight: 600 }}>{rule.name}</span>
+                    <span style={{ color: "#555", marginLeft: 8 }}>({rule.type})</span>
+                    <span style={{ color: dist === "equal" ? "#7b1fa2" : "#1565c0", fontWeight: 700, marginLeft: 8 }}>distribution: {dist}</span>
+                    {rule.type === "offset" && <span style={{ color: "#555", marginLeft: 8 }}>offset: {rule.offset}</span>}
+                    {rule.type === "multiplier" && <span style={{ color: "#555", marginLeft: 8 }}>factor: ×{rule.factor}</span>}
+                    <div style={{ marginTop: 4, fontFamily: "monospace", fontSize: 10 }}>
+                      {periods.map(p => {
+                        const scVal = output.filter(r => r._period === p).reduce((s, r) => s + (+r[effectiveValF] || 0), 0);
+                        const bVal = base.filter(r => r._period === p).reduce((s, r) => s + (+r[effectiveValF] || 0), 0);
+                        const delta = scVal - bVal;
+                        return (
+                          <span key={p} style={{ marginRight: 12, color: delta > 0 ? "#2e7d32" : delta < 0 ? "#c62828" : "#555" }}>
+                            {p}: Δ={delta >= 0 ? "+" : ""}{Math.round(delta).toLocaleString()}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
           </>) : null}
         </div>
       )}
