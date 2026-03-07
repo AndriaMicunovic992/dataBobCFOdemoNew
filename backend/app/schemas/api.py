@@ -148,8 +148,10 @@ class ScenarioBaseConfig(BaseModel):
 
     source: Literal["actuals", "scenario"] = "actuals"
     source_scenario_id: str | None = None   # when source="scenario"
-    period_from: str | None = None          # YYYY-MM
-    period_to: str | None = None            # YYYY-MM
+    base_year: int | None = None            # e.g. 2025 → Jan-Dec of that year
+    # Legacy fields kept for backwards compatibility with stored data
+    period_from: str | None = None
+    period_to: str | None = None
 
 
 class ScenarioCreate(BaseModel):

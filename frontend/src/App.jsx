@@ -1110,6 +1110,10 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
   const dims = useMemo(() => getDimFields(baseline), [baseline]);
   const measures = useMemo(() => getMeasureFields(baseline, schema), [baseline, schema]);
   const basePeriods = useMemo(() => getUniq(baseline, "_period"), [baseline]);
+  const years = useMemo(() => {
+    const ys = new Set(basePeriods.map(p => p.slice(0, 4)).filter(Boolean));
+    return [...ys].sort();
+  }, [basePeriods]);
 
   const [active, setActive] = useState(new Set());
   const [editId, setEditId] = useState(null);
@@ -1145,9 +1149,15 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
 
       let scenarioBaseline = baseline;
       const config = sc.base_config || {};
+      const baseYear = config.base_year ? String(config.base_year) : null;
 
-      // Filter baseline to configured period range
-      if (config.period_from || config.period_to) {
+      // Filter baseline to the configured base year (or legacy period_from/period_to)
+      if (baseYear) {
+        scenarioBaseline = scenarioBaseline.filter(r => {
+          const period = r._period || r.period || r.month_year || "";
+          return period.startsWith(baseYear);
+        });
+      } else if (config.period_from || config.period_to) {
         scenarioBaseline = scenarioBaseline.filter(r => {
           const period = r._period || r.period || r.month_year || "";
           if (config.period_from && period < config.period_from) return false;
@@ -1183,11 +1193,17 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
       const futurePeriods = [...ruleTargetPeriods].filter(p => !existingPeriods.has(p)).sort();
 
       if (futurePeriods.length > 0 && expandedBaseline.length > 0) {
-        const sortedBasePeriods = [...existingPeriods].sort();
         for (const fp of futurePeriods) {
           const targetMonth = fp.slice(5, 7);
-          let matchingBasePeriod = sortedBasePeriods.find(bp => bp.slice(5, 7) === targetMonth);
-          if (!matchingBasePeriod) matchingBasePeriod = sortedBasePeriods[sortedBasePeriods.length - 1];
+          // Use base_year for exact month mapping when available
+          let matchingBasePeriod = baseYear ? `${baseYear}-${targetMonth}` : null;
+          if (matchingBasePeriod && !existingPeriods.has(matchingBasePeriod)) {
+            // Fallback if that exact month isn't in the baseline
+            const sortedBase = [...existingPeriods].sort();
+            matchingBasePeriod = sortedBase.find(bp => bp.slice(5, 7) === targetMonth)
+              || sortedBase[sortedBase.length - 1] || null;
+          }
+          if (!matchingBasePeriod) continue;
 
           const templateRows = expandedBaseline.filter(r =>
             (r._period || r.period || r.month_year || "") === matchingBasePeriod
@@ -1240,7 +1256,7 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
     if (!editId) return;
     setScenarios(p => p.map(s => {
       if (s.id !== editId) return s;
-      const cur = s.base_config || { source: "actuals", source_scenario_id: null, period_from: null, period_to: null };
+      const cur = s.base_config || { source: "actuals", source_scenario_id: null, base_year: null };
       return { ...s, base_config: { ...cur, ...updates } };
     }));
   }
@@ -1258,55 +1274,53 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
   // Safe numeric coercion: handles JS numbers AND numeric strings (e.g. from Decimal→JSON)
   const numF = (r, f) => { const n = +(r[f]); return isNaN(n) ? 0 : n; };
 
-  // Build year-shifted comparison baseline: only include periods in scenario outputs,
-  // and for projected periods add the corresponding baseline year's rows shifted forward.
-  const comparisonBaseline = useMemo(() => {
-    // Collect all periods present in active scenario outputs
-    const scenarioPeriods = new Set();
+  // Per-scenario comparison baselines — isolated so two scenarios with different
+  // base years don't corrupt each other.
+  const comparisonBaselines = useMemo(() => {
+    const result = {};
     for (const sc of scenarios) {
       if (!active.has(sc.id)) continue;
-      for (const row of (scOutputs[sc.name] || [])) {
-        const p = row._period || row.period || row.month_year || "";
-        if (p) scenarioPeriods.add(p);
-      }
-    }
-    if (scenarioPeriods.size === 0) return filtered;
+      const config = sc.base_config || {};
+      const baseYear = config.base_year ? String(config.base_year) : null;
 
-    // Keep only actual baseline rows for periods that appear in scenario outputs
-    const result = filtered.filter(r => {
-      const p = r._period || r.period || r.month_year || "";
-      return scenarioPeriods.has(p);
-    });
+      // Build this scenario's own baseline slice
+      let scBase = baseYear
+        ? filtered.filter(r => (r._period || r.period || r.month_year || "").startsWith(baseYear))
+        : filtered;
 
-    // For each projected period, add year-shifted baseline rows for comparison
-    const addedPeriods = new Set(result.map(r => r._period || r.period || r.month_year || ""));
-    for (const sc of scenarios) {
-      if (!active.has(sc.id)) continue;
-      for (const row of (scOutputs[sc.name] || [])) {
+      const scRows = scOutputs[sc.name] || [];
+      const rows = [...scBase];
+      const addedPeriods = new Set(rows.map(r => r._period || r.period || r.month_year || ""));
+
+      // Add year-shifted rows for projected periods
+      for (const row of scRows) {
         if (row._data_source !== "projected" || !row._baseline_period) continue;
         const projPeriod = row._period || row.period || row.month_year || "";
         if (addedPeriods.has(projPeriod)) continue;
-        const baseRows = filtered.filter(r =>
+        const baseRows = scBase.filter(r =>
           (r._period || r.period || r.month_year || "") === row._baseline_period
         );
         for (const br of baseRows) {
-          result.push({ ...br, _period: projPeriod, period: projPeriod, month_year: projPeriod, _is_comparison_base: true });
+          rows.push({ ...br, _period: projPeriod, period: projPeriod, month_year: projPeriod, _is_comparison_base: true });
         }
         addedPeriods.add(projPeriod);
       }
+      result[sc.name] = rows;
     }
     return result;
   }, [filtered, scOutputs, scenarios, active]);
 
   const variance = useMemo(() => {
     if (!active.size || !effectiveValF) return [];
-    const at = comparisonBaseline.reduce((s, r) => s + numF(r, effectiveValF), 0);
     return scenarios.filter(sc => active.has(sc.id)).map(sc => {
-      const sd = scOutputs[sc.name] || [];
-      const st = sd.reduce((s, r) => s + numF(r, effectiveValF), 0);
-      return { name: sc.name, color: sc.color, total: st, variance: st - at, pct: at ? ((st - at) / Math.abs(at)) * 100 : 0 };
+      const scBase = comparisonBaselines[sc.name] || [];
+      const scData = scOutputs[sc.name] || [];
+      const at = scBase.reduce((s, r) => s + numF(r, effectiveValF), 0);
+      const st = scData.reduce((s, r) => s + numF(r, effectiveValF), 0);
+      return { name: sc.name, color: sc.color, total: st, variance: st - at,
+        pct: at ? ((st - at) / Math.abs(at)) * 100 : 0, baseTotal: at };
     });
-  }, [active, scenarios, scOutputs, comparisonBaseline, effectiveValF]);
+  }, [active, scenarios, scOutputs, comparisonBaselines, effectiveValF]);
 
   return (
     <div>
@@ -1338,9 +1352,9 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
                 <span style={{ width: 10, height: 10, borderRadius: "50%", background: sc.color, flexShrink: 0 }} />
                 {sc.name}
                 <span style={{ fontSize: 11, opacity: 0.6 }}>({sc.rules.length})</span>
-                {sc.base_config && (sc.base_config.period_from || sc.base_config.period_to) && (
+                {sc.base_config && sc.base_config.base_year && (
                   <span style={{ ...S.badge(C.purple), fontSize: 9 }}>
-                    📅 {sc.base_config.period_from || "..."} → {sc.base_config.period_to || "..."}
+                    📅 {sc.base_config.base_year}
                   </span>
                 )}
                 {sc.base_config && sc.base_config.source === "scenario" && (
@@ -1394,28 +1408,23 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
                   ))}
                 </select>
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                <div>
-                  <label style={{ fontSize: 10, color: C.textMuted, fontWeight: 600 }}>From</label>
-                  <select style={{ ...S.select, width: "100%" }}
-                    value={(editSc.base_config || {}).period_from || ""}
-                    onChange={e => updateBaseConfig({ period_from: e.target.value || null })}>
-                    <option value="">All</option>
-                    {allPeriods.map(p => <option key={p} value={p}>{p}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label style={{ fontSize: 10, color: C.textMuted, fontWeight: 600 }}>To</label>
-                  <select style={{ ...S.select, width: "100%" }}
-                    value={(editSc.base_config || {}).period_to || ""}
-                    onChange={e => updateBaseConfig({ period_to: e.target.value || null })}>
-                    <option value="">All</option>
-                    {allPeriods.map(p => <option key={p} value={p}>{p}</option>)}
-                  </select>
-                </div>
+              <div>
+                <label style={{ fontSize: 10, color: C.textMuted, fontWeight: 600 }}>Base Year</label>
+                <select style={{ ...S.select, width: "100%" }}
+                  value={(editSc.base_config || {}).base_year || ""}
+                  onChange={e => updateBaseConfig({ base_year: parseInt(e.target.value) || null })}>
+                  <option value="">Select year...</option>
+                  {years.map(y => <option key={y} value={y}>{y}</option>)}
+                </select>
               </div>
             </div>
           </div>
+          {!(editSc.base_config || {}).base_year && (
+            <div style={{ padding: "8px 12px", borderRadius: 6, background: C.amberBg, border: `1px solid ${C.amber}33`, fontSize: 11, color: C.amber, marginBottom: 8 }}>
+              ⚠ Select a base year above before adding rules.
+            </div>
+          )}
+          {(editSc.base_config || {}).base_year ? (<>
           {editSc.rules.map(rule => {
             const isEditing = editingRuleId === rule.id;
             return (
@@ -1606,13 +1615,14 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
 
             <button style={{ ...S.btn("primary"), marginTop: 12 }} onClick={addRule} disabled={!newRule.name}>Add Rule</button>
           </div>
+          </>) : null}
         </div>
       )}
 
       {active.size > 0 && rowFs.length > 0 && (
         <div style={S.card}>
           <div style={S.cardT}>Comparison Chart</div>
-          <PivotChartView data={comparisonBaseline} rowFs={rowFs} colF={colF} valF={valF} scenarioData={scOutputs} />
+          <PivotChartView data={comparisonBaselines[scenarios.find(sc => active.has(sc.id))?.name] || filtered} rowFs={rowFs} colF={colF} valF={valF} scenarioData={scOutputs} />
         </div>
       )}
 
@@ -1627,7 +1637,7 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
               {scenarios.filter(sc => active.has(sc.id)).map(sc => (
                 <div key={sc.id}>
                   <div style={{ fontSize: 12, fontWeight: 600, color: sc.color, marginBottom: 6, textAlign: "center" }}>{sc.name}</div>
-                  <WaterfallChart baseline={comparisonBaseline} scenarioData={scOutputs[sc.name]} scenarioName={sc.name} scenarioColor={sc.color} rowFs={rowFs} valF={effectiveValF} waterfallField={effectiveWaterfallField} />
+                  <WaterfallChart baseline={comparisonBaselines[sc.name] || filtered} scenarioData={scOutputs[sc.name]} scenarioName={sc.name} scenarioColor={sc.color} rowFs={rowFs} valF={effectiveValF} waterfallField={effectiveWaterfallField} />
                 </div>
               ))}
             </div>
@@ -1648,8 +1658,8 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
               <th style={{ ...S.th, textAlign: "right" }}>Δ %</th>
             </tr></thead>
             <tbody>
-              <tr><td style={S.td}><span style={{ color: C.textSec }}>● Actuals</span></td>
-                <td style={{ ...S.td, ...S.mono, textAlign: "right" }}>{fmt(comparisonBaseline.reduce((s, r) => s + numF(r, effectiveValF), 0))}</td>
+              <tr><td style={S.td}><span style={{ color: C.textSec }}>● Baseline</span></td>
+                <td style={{ ...S.td, ...S.mono, textAlign: "right" }}>{fmt(variance[0]?.baseTotal || 0)}</td>
                 <td style={{ ...S.td, textAlign: "right" }}>—</td><td style={{ ...S.td, textAlign: "right" }}>—</td></tr>
               {variance.map(v => (
                 <tr key={v.name}>
@@ -1667,7 +1677,7 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
       {active.size > 0 && rowFs.length > 0 && valF && (
         <div style={S.card}>
           <div style={S.cardT}>Comparison Table</div>
-          <ComparisonTable baseline={comparisonBaseline} scenarioOutputs={scOutputs} rowFs={rowFs} colF={colF} valF={valF} scenarios={scenarios.filter(sc => active.has(sc.id))} />
+          <ComparisonTable baseline={comparisonBaselines[scenarios.find(sc => active.has(sc.id))?.name] || filtered} scenarioOutputs={scOutputs} rowFs={rowFs} colF={colF} valF={valF} scenarios={scenarios.filter(sc => active.has(sc.id))} />
         </div>
       )}
 

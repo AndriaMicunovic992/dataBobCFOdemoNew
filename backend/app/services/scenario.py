@@ -545,12 +545,13 @@ def generate_projection(
 
 
 def _normalize_base_config(config: dict | None) -> dict:
-    """Normalize base_config to the simple format, stripping obsolete fields."""
+    """Normalize base_config to the current format, preserving all relevant fields."""
     if not config:
         return {"source": "actuals"}
     return {
         "source": config.get("source", "actuals"),
         "source_scenario_id": config.get("source_scenario_id"),
+        "base_year": config.get("base_year"),
         "period_from": config.get("period_from"),
         "period_to": config.get("period_to"),
     }
@@ -641,7 +642,14 @@ def compute_scenario_output(
     else:
         base_df = actuals_df
 
-    # Step 2: Filter to period range if specified
+    # Step 2: Filter to base year / period range
+    base_year = config.get("base_year")
+    period_from = config.get("period_from")
+    period_to = config.get("period_to")
+    # base_year takes priority; fall back to period_from/period_to for legacy scenarios
+    if base_year:
+        period_from = f"{base_year}-01"
+        period_to = f"{base_year}-12"
     period_col = _find_period_col(base_df)
     if period_col and (period_from or period_to):
         mask = pl.lit(True)
