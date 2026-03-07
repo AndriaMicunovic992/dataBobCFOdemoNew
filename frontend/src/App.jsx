@@ -1348,7 +1348,7 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
             baselinePeriodRef = "_averaged";
           }
           for (const tr of templateRows) {
-            expandedBaseline.push({
+            const projected = {
               ...tr,
               _period: fp, period: fp, month_year: fp,
               year: newYear, _year: newYear,
@@ -1357,7 +1357,12 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
               quarter: `Q${Math.ceil(parseInt(targetMonth, 10) / 3)} ${newYear}`,
               _data_source: "projected",
               _baseline_period: baselinePeriodRef,
-            });
+            };
+            // Averaged months have no real actuals — start from 0
+            if (baselinePeriodRef === "_averaged") {
+              projected[effectiveValF] = 0;
+            }
+            expandedBaseline.push(projected);
           }
         }
       }
