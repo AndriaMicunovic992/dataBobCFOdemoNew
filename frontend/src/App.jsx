@@ -201,14 +201,27 @@ function applyRules(data, rules, valF = "amount") {
       const distribution = rule.distribution || "use_base";
       console.log("[DISTRIBUTION DEBUG multiplier]", { ruleName: rule.name, distribution, rawDistribution: rule.distribution, factor: rule.factor, matchedRows: matchIdx.length });
       if (distribution === "equal") {
-        // Equal: compute total delta then divide evenly across all matched rows
         const totalBase = matchIdx.reduce((s, i) => s + Math.abs(+res[i][valF] || 0), 0);
         const totalDelta = totalBase * (rule.factor - 1);
-        const share = matchIdx.length > 0 ? totalDelta / matchIdx.length : 0;
-        console.log("[DISTRIBUTION] EQUAL multiplier: totalBase =", totalBase, "totalDelta =", totalDelta, "share =", share);
+        // Count periods from the rule's range (not from matched data rows)
+        const rulePeriodCount = (rule.periodFrom && rule.periodTo)
+          ? generatePeriodRange(rule.periodFrom, rule.periodTo).length
+          : (() => { const ps = new Set(); for (const i of matchIdx) { ps.add(res[i]._period || res[i].period || res[i].month_year || ""); } return ps.size; })();
+        const deltaPerPeriod = rulePeriodCount > 0 ? totalDelta / rulePeriodCount : 0;
+        console.log("[DISTRIBUTION] EQUAL multiplier: rulePeriodCount =", rulePeriodCount, "deltaPerPeriod =", deltaPerPeriod);
+        // Group matched rows by period and distribute within each period
+        const periodGroups = {};
         for (const i of matchIdx) {
-          const cur = +res[i][valF] || 0;
-          res[i] = { ...res[i], [valF]: Math.round((cur + share) * 100) / 100 };
+          const p = res[i]._period || res[i].period || res[i].month_year || "_no_period";
+          if (!periodGroups[p]) periodGroups[p] = [];
+          periodGroups[p].push(i);
+        }
+        for (const [, indices] of Object.entries(periodGroups)) {
+          const perRow = indices.length > 0 ? deltaPerPeriod / indices.length : 0;
+          for (const i of indices) {
+            const cur = +res[i][valF] || 0;
+            res[i] = { ...res[i], [valF]: Math.round((cur + perRow) * 100) / 100 };
+          }
         }
       } else {
         // Proportional (default): multiply each row by factor
@@ -222,19 +235,31 @@ function applyRules(data, rules, valF = "amount") {
       const distribution = rule.distribution || "use_base";
       console.log("[DISTRIBUTION DEBUG]", { ruleName: rule.name, distribution, rawDistribution: rule.distribution, offset: rule.offset, matchedRows: matchIdx.length });
       if (distribution === "equal") {
-        // Equal: divide total offset evenly across all matching rows
-        const share = rule.offset / matchIdx.length;
-        console.log("[DISTRIBUTION] EQUAL offset: share per row =", share);
+        // Count periods from the rule's periodFrom→periodTo range
+        const rulePeriodCount = (rule.periodFrom && rule.periodTo)
+          ? generatePeriodRange(rule.periodFrom, rule.periodTo).length
+          : (() => { const ps = new Set(); for (const i of matchIdx) { ps.add(res[i]._period || res[i].period || res[i].month_year || ""); } return ps.size; })();
+        const perPeriod = rulePeriodCount > 0 ? rule.offset / rulePeriodCount : 0;
+        console.log("[DISTRIBUTION] EQUAL offset: rulePeriodCount =", rulePeriodCount, "perPeriod =", perPeriod);
+        // Group matched rows by period — each period gets the same share
+        const periodGroups = {};
         for (const i of matchIdx) {
-          const cur = +res[i][valF] || 0;
-          res[i] = { ...res[i], [valF]: Math.round((cur + share) * 100) / 100 };
+          const p = res[i]._period || res[i].period || res[i].month_year || "_no_period";
+          if (!periodGroups[p]) periodGroups[p] = [];
+          periodGroups[p].push(i);
+        }
+        for (const [, indices] of Object.entries(periodGroups)) {
+          const perRow = indices.length > 0 ? perPeriod / indices.length : 0;
+          for (const i of indices) {
+            const cur = +res[i][valF] || 0;
+            res[i] = { ...res[i], [valF]: Math.round((cur + perRow) * 100) / 100 };
+          }
         }
       } else {
         // Proportional (use_base): distribute based on each row's share of total |value|
         const totalBase = matchIdx.reduce((s, i) => s + Math.abs(+res[i][valF] || 0), 0);
         console.log("[DISTRIBUTION] PROPORTIONAL offset: totalBase =", totalBase);
         if (totalBase === 0) {
-          // All base values are 0 — fall back to equal
           const share = rule.offset / matchIdx.length;
           for (const i of matchIdx) {
             const cur = +res[i][valF] || 0;
