@@ -1280,9 +1280,15 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
             (r._period || r.period || r.month_year || "") === matchingBasePeriod
           );
           for (const tr of templateRows) {
+            const newYear = fp.slice(0, 4);
+            const newMonth = fp.slice(5, 7);
             expandedBaseline.push({
               ...tr,
               _period: fp, period: fp, month_year: fp,
+              year: newYear, _year: newYear,
+              month: newMonth, _month: newMonth,
+              month_name: MONTH_NAMES[parseInt(newMonth, 10) - 1] || tr.month_name,
+              quarter: `Q${Math.ceil(parseInt(newMonth, 10) / 3)} ${newYear}`,
               _data_source: "projected",
               _baseline_period: matchingBasePeriod,
             });
@@ -1375,7 +1381,17 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
           (r._period || r.period || r.month_year || "") === row._baseline_period
         );
         for (const br of baseRows) {
-          rows.push({ ...br, _period: projPeriod, period: projPeriod, month_year: projPeriod, _is_comparison_base: true });
+          const newYear = projPeriod.slice(0, 4);
+          const newMonth = projPeriod.slice(5, 7);
+          rows.push({
+            ...br,
+            _period: projPeriod, period: projPeriod, month_year: projPeriod,
+            year: newYear, _year: newYear,
+            month: newMonth, _month: newMonth,
+            month_name: MONTH_NAMES[parseInt(newMonth, 10) - 1] || br.month_name,
+            quarter: `Q${Math.ceil(parseInt(newMonth, 10) / 3)} ${newYear}`,
+            _is_comparison_base: true,
+          });
         }
         addedPeriods.add(projPeriod);
       }
