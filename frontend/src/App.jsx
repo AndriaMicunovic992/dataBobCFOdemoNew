@@ -1166,26 +1166,39 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
 
       // Generate rows for future periods targeted by rules
       let expandedBaseline = [...scenarioBaseline];
+
+      // Collect all periods targeted by rules
+      const ruleTargetPeriods = new Set();
       for (const rule of sc.rules) {
-        if (rule.periodFrom || rule.periodTo) {
-          const pFrom = rule.periodFrom || "";
-          const pTo = rule.periodTo || "9999-99";
-          const existingPeriods = new Set(expandedBaseline.map(r => r._period || r.period || ""));
+        if (rule.periodFrom && rule.periodTo) {
+          generatePeriodRange(rule.periodFrom, rule.periodTo).forEach(p => ruleTargetPeriods.add(p));
+        } else if (rule.periodFrom) {
+          ruleTargetPeriods.add(rule.periodFrom);
+        }
+      }
 
-          const neededPeriods = (pFrom && pTo ? generatePeriodRange(pFrom, pTo) : [])
-            .filter(p => !existingPeriods.has(p));
+      const existingPeriods = new Set(
+        expandedBaseline.map(r => r._period || r.period || r.month_year || "").filter(Boolean)
+      );
+      const futurePeriods = [...ruleTargetPeriods].filter(p => !existingPeriods.has(p)).sort();
 
-          if (neededPeriods.length > 0 && expandedBaseline.length > 0) {
-            const sortedPeriods = [...existingPeriods].filter(Boolean).sort();
-            const templatePeriod = sortedPeriods[sortedPeriods.length - 1];
-            const templateRows = expandedBaseline.filter(r =>
-              (r._period || r.period || "") === templatePeriod
-            );
-            for (const np of neededPeriods) {
-              for (const tr of templateRows) {
-                expandedBaseline.push({ ...tr, _period: np, period: np, month_year: np, _data_source: "projected" });
-              }
-            }
+      if (futurePeriods.length > 0 && expandedBaseline.length > 0) {
+        const sortedBasePeriods = [...existingPeriods].sort();
+        for (const fp of futurePeriods) {
+          const targetMonth = fp.slice(5, 7);
+          let matchingBasePeriod = sortedBasePeriods.find(bp => bp.slice(5, 7) === targetMonth);
+          if (!matchingBasePeriod) matchingBasePeriod = sortedBasePeriods[sortedBasePeriods.length - 1];
+
+          const templateRows = expandedBaseline.filter(r =>
+            (r._period || r.period || r.month_year || "") === matchingBasePeriod
+          );
+          for (const tr of templateRows) {
+            expandedBaseline.push({
+              ...tr,
+              _period: fp, period: fp, month_year: fp,
+              _data_source: "projected",
+              _baseline_period: matchingBasePeriod,
+            });
           }
         }
       }
@@ -1244,15 +1257,56 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
 
   // Safe numeric coercion: handles JS numbers AND numeric strings (e.g. from Decimal→JSON)
   const numF = (r, f) => { const n = +(r[f]); return isNaN(n) ? 0 : n; };
+
+  // Build year-shifted comparison baseline: only include periods in scenario outputs,
+  // and for projected periods add the corresponding baseline year's rows shifted forward.
+  const comparisonBaseline = useMemo(() => {
+    // Collect all periods present in active scenario outputs
+    const scenarioPeriods = new Set();
+    for (const sc of scenarios) {
+      if (!active.has(sc.id)) continue;
+      for (const row of (scOutputs[sc.name] || [])) {
+        const p = row._period || row.period || row.month_year || "";
+        if (p) scenarioPeriods.add(p);
+      }
+    }
+    if (scenarioPeriods.size === 0) return filtered;
+
+    // Keep only actual baseline rows for periods that appear in scenario outputs
+    const result = filtered.filter(r => {
+      const p = r._period || r.period || r.month_year || "";
+      return scenarioPeriods.has(p);
+    });
+
+    // For each projected period, add year-shifted baseline rows for comparison
+    const addedPeriods = new Set(result.map(r => r._period || r.period || r.month_year || ""));
+    for (const sc of scenarios) {
+      if (!active.has(sc.id)) continue;
+      for (const row of (scOutputs[sc.name] || [])) {
+        if (row._data_source !== "projected" || !row._baseline_period) continue;
+        const projPeriod = row._period || row.period || row.month_year || "";
+        if (addedPeriods.has(projPeriod)) continue;
+        const baseRows = filtered.filter(r =>
+          (r._period || r.period || r.month_year || "") === row._baseline_period
+        );
+        for (const br of baseRows) {
+          result.push({ ...br, _period: projPeriod, period: projPeriod, month_year: projPeriod, _is_comparison_base: true });
+        }
+        addedPeriods.add(projPeriod);
+      }
+    }
+    return result;
+  }, [filtered, scOutputs, scenarios, active]);
+
   const variance = useMemo(() => {
     if (!active.size || !effectiveValF) return [];
-    const at = filtered.reduce((s, r) => s + numF(r, effectiveValF), 0);
+    const at = comparisonBaseline.reduce((s, r) => s + numF(r, effectiveValF), 0);
     return scenarios.filter(sc => active.has(sc.id)).map(sc => {
       const sd = scOutputs[sc.name] || [];
       const st = sd.reduce((s, r) => s + numF(r, effectiveValF), 0);
       return { name: sc.name, color: sc.color, total: st, variance: st - at, pct: at ? ((st - at) / Math.abs(at)) * 100 : 0 };
     });
-  }, [active, scenarios, scOutputs, filtered, effectiveValF]);
+  }, [active, scenarios, scOutputs, comparisonBaseline, effectiveValF]);
 
   return (
     <div>
@@ -1558,7 +1612,7 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
       {active.size > 0 && rowFs.length > 0 && (
         <div style={S.card}>
           <div style={S.cardT}>Comparison Chart</div>
-          <PivotChartView data={filtered} rowFs={rowFs} colF={colF} valF={valF} scenarioData={scOutputs} />
+          <PivotChartView data={comparisonBaseline} rowFs={rowFs} colF={colF} valF={valF} scenarioData={scOutputs} />
         </div>
       )}
 
@@ -1573,7 +1627,7 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
               {scenarios.filter(sc => active.has(sc.id)).map(sc => (
                 <div key={sc.id}>
                   <div style={{ fontSize: 12, fontWeight: 600, color: sc.color, marginBottom: 6, textAlign: "center" }}>{sc.name}</div>
-                  <WaterfallChart baseline={filtered} scenarioData={scOutputs[sc.name]} scenarioName={sc.name} scenarioColor={sc.color} rowFs={rowFs} valF={effectiveValF} waterfallField={effectiveWaterfallField} />
+                  <WaterfallChart baseline={comparisonBaseline} scenarioData={scOutputs[sc.name]} scenarioName={sc.name} scenarioColor={sc.color} rowFs={rowFs} valF={effectiveValF} waterfallField={effectiveWaterfallField} />
                 </div>
               ))}
             </div>
@@ -1595,7 +1649,7 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
             </tr></thead>
             <tbody>
               <tr><td style={S.td}><span style={{ color: C.textSec }}>● Actuals</span></td>
-                <td style={{ ...S.td, ...S.mono, textAlign: "right" }}>{fmt(filtered.reduce((s, r) => s + numF(r, effectiveValF), 0))}</td>
+                <td style={{ ...S.td, ...S.mono, textAlign: "right" }}>{fmt(comparisonBaseline.reduce((s, r) => s + numF(r, effectiveValF), 0))}</td>
                 <td style={{ ...S.td, textAlign: "right" }}>—</td><td style={{ ...S.td, textAlign: "right" }}>—</td></tr>
               {variance.map(v => (
                 <tr key={v.name}>
@@ -1613,7 +1667,7 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
       {active.size > 0 && rowFs.length > 0 && valF && (
         <div style={S.card}>
           <div style={S.cardT}>Comparison Table</div>
-          <ComparisonTable baseline={filtered} scenarioOutputs={scOutputs} rowFs={rowFs} colF={colF} valF={valF} scenarios={scenarios.filter(sc => active.has(sc.id))} />
+          <ComparisonTable baseline={comparisonBaseline} scenarioOutputs={scOutputs} rowFs={rowFs} colF={colF} valF={valF} scenarios={scenarios.filter(sc => active.has(sc.id))} />
         </div>
       )}
 
