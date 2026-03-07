@@ -545,28 +545,145 @@ def generate_projection(
 
 
 def _normalize_base_config(config: dict | None) -> dict:
-    """Normalise both old and new base_config formats to new format.
-
-    Old format (Step 4 legacy): has "method" key ("copy_year", "average", etc.)
-    New format (Step 3 redesign): has "source" and "projection_method" keys.
-    """
+    """Normalize base_config to the simple format, stripping obsolete fields."""
     if not config:
-        return {"source": "actuals", "projection_method": "none"}
-    # Already new format
-    if "source" in config:
-        return config
-    # Old format: translate
-    old_method = config.get("method", "none")
-    method_map = {"copy_year": "copy", "average": "average", "last_n_months": "average", "none": "none"}
+        return {"source": "actuals"}
     return {
-        "source": "actuals",
-        "source_scenario_id": None,
-        "period_from": None,
-        "period_to": None,
-        "project_to_year": config.get("target_year"),
-        "projection_method": method_map.get(old_method, "none"),
-        "growth_pct": config.get("growth_pct", 0.0),
+        "source": config.get("source", "actuals"),
+        "source_scenario_id": config.get("source_scenario_id"),
+        "period_from": config.get("period_from"),
+        "period_to": config.get("period_to"),
     }
+
+
+def _generate_period_range(period_from: str, period_to: str) -> list[str]:
+    """Generate all YYYY-MM periods between two endpoints (inclusive)."""
+    try:
+        y1, m1 = int(period_from[:4]), int(period_from[5:7])
+        y2, m2 = int(period_to[:4]), int(period_to[5:7])
+    except (ValueError, IndexError):
+        return []
+    periods = []
+    y, m = y1, m1
+    while (y, m) <= (y2, m2):
+        periods.append(f"{y:04d}-{m:02d}")
+        m += 1
+        if m > 12:
+            m = 1
+            y += 1
+        if len(periods) > 120:  # safety limit: 10 years
+            break
+    return periods
+
+
+def _project_periods(
+    base_df: pl.DataFrame,
+    period_col: str,
+    target_periods: list[str],
+    value_column: str,
+) -> pl.DataFrame:
+    """Generate rows for future periods by copying the last baseline period as a template."""
+    all_periods = sorted(base_df[period_col].cast(pl.Utf8).drop_nulls().unique().to_list())
+    if not all_periods:
+        return pl.DataFrame()
+
+    template_period = all_periods[-1]
+    template_df = base_df.filter(pl.col(period_col).cast(pl.Utf8) == template_period)
+    if template_df.is_empty():
+        return pl.DataFrame()
+
+    if "_row_id" in template_df.columns:
+        template_df = template_df.drop("_row_id")
+
+    parts = []
+    for tp in target_periods:
+        shifted = template_df.with_columns(pl.lit(tp).alias(period_col))
+        parts.append(shifted)
+
+    return pl.concat(parts, how="diagonal_relaxed") if parts else pl.DataFrame()
+
+
+def compute_scenario_output(
+    actuals_df: pl.DataFrame,
+    rules: list[dict],
+    base_config: dict | None,
+    all_scenarios: dict[str, dict] | None = None,
+    value_column: str = "amount",
+    _depth: int = 0,
+) -> pl.DataFrame:
+    """Compute a scenario's output:
+
+    1. Get baseline data (actuals filtered to period range, or another scenario's output).
+    2. Apply rules sequentially — rules can target ANY period including future ones.
+
+    For future periods: if a rule targets a period that doesn't exist in the baseline,
+    create rows by copying the baseline pattern (same dimension values) into those periods.
+    """
+    if _depth > 5:
+        logger.warning("Scenario chain depth exceeded 5")
+        return actuals_df
+
+    config = _normalize_base_config(base_config)
+    source = config.get("source", "actuals")
+    period_from = config.get("period_from")
+    period_to = config.get("period_to")
+
+    # Step 1: Get baseline
+    if source == "scenario" and config.get("source_scenario_id") and all_scenarios:
+        src = all_scenarios.get(config["source_scenario_id"])
+        if src:
+            base_df = compute_scenario_output(
+                actuals_df, src.get("rules", []), src.get("base_config"),
+                all_scenarios, value_column, _depth + 1,
+            )
+        else:
+            base_df = actuals_df
+    else:
+        base_df = actuals_df
+
+    # Step 2: Filter to period range if specified
+    period_col = _find_period_col(base_df)
+    if period_col and (period_from or period_to):
+        mask = pl.lit(True)
+        if period_from:
+            mask = mask & (pl.col(period_col).cast(pl.Utf8) >= period_from)
+        if period_to:
+            mask = mask & (pl.col(period_col).cast(pl.Utf8) <= period_to)
+        base_df = base_df.filter(mask)
+
+    # Step 3: Find rule-targeted periods that don't exist in baseline (future periods)
+    existing_periods: set[str] = set()
+    if period_col and not base_df.is_empty():
+        existing_periods = set(base_df[period_col].cast(pl.Utf8).drop_nulls().unique().to_list())
+
+    target_periods: set[str] = set()
+    for rule in rules:
+        pf = rule.get("periodFrom")
+        pt = rule.get("periodTo")
+        if pf and pt:
+            target_periods.update(_generate_period_range(pf, pt))
+        elif pf:
+            target_periods.add(pf)
+        elif pt:
+            target_periods.add(pt)
+
+    future_periods = sorted(target_periods - existing_periods)
+
+    # Step 4: Project into future periods if needed
+    if future_periods and period_col and not base_df.is_empty():
+        projected = _project_periods(base_df, period_col, future_periods, value_column)
+        if not projected.is_empty():
+            combined = pl.concat([
+                base_df.with_columns(pl.lit("actual").alias("_data_source")),
+                projected.with_columns(pl.lit("projected").alias("_data_source")),
+            ], how="diagonal_relaxed")
+        else:
+            combined = base_df.with_columns(pl.lit("actual").alias("_data_source"))
+    else:
+        combined = base_df.with_columns(pl.lit("actual").alias("_data_source"))
+
+    # Step 5: Apply rules
+    return apply_rules(combined, rules, value_column)
 
 
 def build_scenario_data(
