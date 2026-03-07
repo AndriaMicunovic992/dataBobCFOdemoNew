@@ -1320,6 +1320,15 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
         </div>
       </div>
 
+      <div style={S.card}>
+        <div style={{ display: "grid", gridTemplateColumns: "2fr 2fr 1fr", gap: 14, marginBottom: 10 }}>
+          <FieldManager label="Row Fields" allFields={dims} selected={rowFs} onChange={setRowFs} color={C.brand} />
+          <FieldManager label="Column Field" allFields={dims.filter(f => !rowFs.includes(f))} selected={colF} onChange={setColF} color={C.purple} single />
+          <FieldManager label="Value" allFields={measures} selected={valF} onChange={setValF} color={C.green} single />
+        </div>
+        <FilterManager baseline={baseline} allFields={dims} filters={filters} setFilters={setFilters} />
+      </div>
+
       {scenarios.length > 0 && (
         <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
           {scenarios.map(sc => (
@@ -1346,15 +1355,6 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
           ))}
         </div>
       )}
-
-      <div style={S.card}>
-        <div style={{ display: "grid", gridTemplateColumns: "2fr 2fr 1fr", gap: 14, marginBottom: 10 }}>
-          <FieldManager label="Row Fields" allFields={dims} selected={rowFs} onChange={setRowFs} color={C.brand} />
-          <FieldManager label="Column Field" allFields={dims.filter(f => !rowFs.includes(f))} selected={colF} onChange={setColF} color={C.purple} single />
-          <FieldManager label="Value" allFields={measures} selected={valF} onChange={setValF} color={C.green} single />
-        </div>
-        <FilterManager baseline={baseline} allFields={dims} filters={filters} setFilters={setFilters} />
-      </div>
 
       {editSc && (
         <div style={{ ...S.card, borderColor: editSc.color + "44", borderWidth: 2 }}>
@@ -1745,19 +1745,34 @@ function ChatPanel({ baseline, scenarios, setScenarios, setActiveTab, datasetId 
                 return updated;
               });
             } else {
-              // Create new scenario
-              setScenarios(p => {
-                const color = SC_COLORS[p.length % SC_COLORS.length];
-                const name = `Scenario ${p.length + 1}`;
-                const payload = { name, dataset_id: datasetId, rules: pendingRules, color };
-                if (pendingBaseConfig) payload.base_config = pendingBaseConfig;
-                createScenario(payload).then(created => {
-                  setScenarios(prev => [...prev, { id: created.id, name: created.name, rules: created.rules || pendingRules, color: created.color || color, base_config: created.base_config || null }]);
-                }).catch(() => {
-                  setScenarios(prev => [...prev, { id: Date.now(), name, rules: pendingRules, color, base_config: pendingBaseConfig || null }]);
-                });
-                return p;
-              });
+              // Create new scenario via API then add to state
+              const color = SC_COLORS[scenarios.length % SC_COLORS.length];
+              const name = `Scenario ${scenarios.length + 1}`;
+              const payload = { name, dataset_id: datasetId, rules: pendingRules, color };
+              if (pendingBaseConfig) {
+                payload.base_config = {
+                  source: pendingBaseConfig.source || "actuals",
+                  source_scenario_id: pendingBaseConfig.source_scenario_id || null,
+                  period_from: pendingBaseConfig.period_from || null,
+                  period_to: pendingBaseConfig.period_to || null,
+                };
+              }
+              try {
+                const created = await createScenario(payload);
+                setScenarios(prev => [...prev, {
+                  id: created.id, name: created.name,
+                  rules: created.rules || pendingRules,
+                  color: created.color || color,
+                  base_config: created.base_config || null,
+                }]);
+              } catch (e) {
+                console.error("Failed to create scenario via API:", e);
+                setScenarios(prev => [...prev, {
+                  id: String(Date.now()), name,
+                  rules: pendingRules, color,
+                  base_config: pendingBaseConfig || null,
+                }]);
+              }
             }
             setActiveTab("scenarios");
           }
