@@ -198,9 +198,22 @@ function applyRules(data, rules, valF = "amount") {
       if (m) matchIdx.push(i);
     });
     if (rule.type === "multiplier") {
-      for (const i of matchIdx) {
-        const cur = +res[i][valF] || 0;
-        res[i] = { ...res[i], [valF]: Math.round(cur * rule.factor * 100) / 100 };
+      const distribution = rule.distribution || "use_base";
+      if (distribution === "equal") {
+        // Equal: compute total delta then divide evenly across all matched rows
+        const totalBase = matchIdx.reduce((s, i) => s + Math.abs(+res[i][valF] || 0), 0);
+        const totalDelta = totalBase * (rule.factor - 1);
+        const share = matchIdx.length > 0 ? totalDelta / matchIdx.length : 0;
+        for (const i of matchIdx) {
+          const cur = +res[i][valF] || 0;
+          res[i] = { ...res[i], [valF]: Math.round((cur + share) * 100) / 100 };
+        }
+      } else {
+        // Proportional (default): multiply each row by factor
+        for (const i of matchIdx) {
+          const cur = +res[i][valF] || 0;
+          res[i] = { ...res[i], [valF]: Math.round(cur * rule.factor * 100) / 100 };
+        }
       }
     } else if (rule.type === "offset" && matchIdx.length > 0) {
       const distribution = rule.distribution || "use_base";
@@ -1190,12 +1203,28 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
   const toggle = id => setActive(p => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const filtered = useMemo(() => applyFilters(baseline, filters), [baseline, filters]);
 
+  // Split filters: calendar fields only affect display, not computation baseline
+  const displayFilters = useMemo(() => {
+    const calFields = new Set([
+      "year", "month", "quarter", "month_year", "month_name",
+      "_period", "period", "_year", "_month", "_month_name",
+    ]);
+    const display = {};
+    const compute = {};
+    for (const [k, v] of Object.entries(filters)) {
+      if (calFields.has(k)) display[k] = v;
+      else compute[k] = v;
+    }
+    return { display, compute };
+  }, [filters]);
+
   const scOutputs = useMemo(() => {
     const o = {};
     for (const sc of scenarios) {
       if (!active.has(sc.id)) continue;
 
-      let scenarioBaseline = baseline;
+      // Use baseline filtered by NON-calendar filters only (calendar filters only affect display)
+      let scenarioBaseline = applyFilters(baseline, displayFilters.compute);
       const config = sc.base_config || {};
       const baseYear = config.base_year ? String(config.base_year) : null;
 
@@ -1262,10 +1291,11 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
       }
 
       const result = applyRules(expandedBaseline, sc.rules, effectiveValF);
+      // Apply ALL filters (including calendar/display) to the final output
       o[sc.name] = applyFilters(result, filters);
     }
     return o;
-  }, [scenarios, active, baseline, filters, effectiveValF]);
+  }, [scenarios, active, baseline, filters, displayFilters, effectiveValF]);
 
   const allPeriods = useMemo(() => {
     const extraPeriods = new Set();
@@ -1306,7 +1336,7 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
   function addRule() {
     if (!editId || !newRule.name) return;
     setScenarios(p => p.map(s => s.id !== editId ? s : { ...s, rules: [...s.rules, { ...newRule, id: Date.now() }] }));
-    setNewRule({ name: "", type: "multiplier", factor: 1.05, offset: 0, filters: {}, periodFrom: "", periodTo: "" });
+    setNewRule({ name: "", type: "multiplier", factor: 1.05, offset: 0, filters: {}, periodFrom: "", periodTo: "", distribution: "use_base" });
     setRuleFilterFields([]);
   }
   function rmRule(rid) { setScenarios(p => p.map(s => s.id !== editId ? s : { ...s, rules: s.rules.filter(r => r.id !== rid) })); }
@@ -1325,10 +1355,12 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
       const config = sc.base_config || {};
       const baseYear = config.base_year ? String(config.base_year) : null;
 
-      // Build this scenario's own baseline slice
+      // Use NON-calendar-filtered baseline so projected periods are still computed
+      // even when a calendar filter (e.g. year=2026) is active
+      const computeBase = applyFilters(baseline, displayFilters.compute);
       let scBase = baseYear
-        ? filtered.filter(r => (r._period || r.period || r.month_year || "").startsWith(baseYear))
-        : filtered;
+        ? computeBase.filter(r => (r._period || r.period || r.month_year || "").startsWith(baseYear))
+        : computeBase;
 
       const scRows = scOutputs[sc.name] || [];
       const rows = [...scBase];
@@ -1347,10 +1379,11 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
         }
         addedPeriods.add(projPeriod);
       }
-      result[sc.name] = rows;
+      // Apply ALL filters (including calendar) for display
+      result[sc.name] = applyFilters(rows, filters);
     }
     return result;
-  }, [filtered, scOutputs, scenarios, active]);
+  }, [baseline, scOutputs, scenarios, active, filters, displayFilters]);
 
   const variance = useMemo(() => {
     if (!active.size || !effectiveValF) return [];

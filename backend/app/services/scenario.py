@@ -109,6 +109,32 @@ def _apply_multiplier(
     )
 
 
+def _apply_multiplier_equal(
+    lf: pl.LazyFrame, mask: pl.Expr, value_column: str, factor: float
+) -> pl.LazyFrame:
+    """Apply multiplier as equal distribution: total_delta / row_count added to each matched row."""
+    df_full = lf.collect().with_row_index("__row_idx")
+    df_match = df_full.filter(mask)
+
+    if df_match.is_empty():
+        return df_full.drop("__row_idx").lazy()
+
+    total_abs = float(df_match[value_column].cast(pl.Float64).abs().sum())
+    total_delta = total_abs * (factor - 1)
+    per_row = total_delta / len(df_match)
+
+    df_match = df_match.with_columns(pl.lit(per_row).alias("_per_row_delta"))
+    delta_df = df_match.select(["__row_idx", "_per_row_delta"])
+    df_merged = df_full.join(delta_df, on="__row_idx", how="left")
+    df_merged = df_merged.with_columns(
+        (
+            pl.col(value_column).cast(pl.Float64)
+            + pl.col("_per_row_delta").fill_null(0.0)
+        ).alias(value_column)
+    ).drop(["__row_idx", "_per_row_delta"])
+    return df_merged.lazy()
+
+
 def _apply_offset(
     lf: pl.LazyFrame, mask: pl.Expr, value_column: str, total_offset: float,
     distribution: str = "use_base",
@@ -213,7 +239,11 @@ def apply_rules(
 
         if rule_type == "multiplier":
             factor = float(rule.get("factor", 1.0))
-            lf = _apply_multiplier(lf, mask, value_column, factor)
+            distribution = rule.get("distribution", "use_base")
+            if distribution == "equal":
+                lf = _apply_multiplier_equal(lf, mask, value_column, factor)
+            else:
+                lf = _apply_multiplier(lf, mask, value_column, factor)
 
         elif rule_type == "offset":
             total_offset = float(rule.get("offset", 0.0))
