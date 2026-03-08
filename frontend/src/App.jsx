@@ -847,25 +847,225 @@ function ComparisonTable({ baseline, scenarioOutputs, rowFs, colF, valF, scenari
 // SCHEMA VIEW (with editable roles + editable relationships)
 // ═══════════════════════════════════════════════════════════════
 // ─── KNOWLEDGE PANEL ─────────────────────────────────────────────
-const KNOWLEDGE_TYPE_CONFIG = {
-  unmapped_relationship: { icon: "🔗", color: C.brand, label: "Relationship" },
-  calculation: { icon: "🧮", color: C.purple, label: "Calculation" },
-  data_transformation: { icon: "🔄", color: C.amber, label: "Transformation" },
-  term_definition: { icon: "📖", color: C.green, label: "Definition" },
-  annotation: { icon: "📌", color: C.textSec, label: "Note" },
-  interpretation_rule: { icon: "📐", color: C.brandDark, label: "Interpretation" },
-  metric_definition: { icon: "📊", color: C.purple, label: "Metric" },
-  dataset_mapping: { icon: "🗺️", color: C.brand, label: "Mapping" },
-  relationship_hint: { icon: "💡", color: C.amber, label: "Hint" },
+const KNOWLEDGE_TYPES = {
+  relationship:   { label: "Relationships",   icon: "🔗", color: "#6366f1" },
+  calculation:    { label: "Calculations",    icon: "🧮", color: "#8b5cf6" },
+  transformation: { label: "Transformations", icon: "🔄", color: "#0ea5e9" },
+  definition:     { label: "Definitions",     icon: "📖", color: "#2563eb" },
+  note:           { label: "Notes",           icon: "📝", color: "#d97706" },
 };
+
+const KNOWLEDGE_CONTENT_TEMPLATES = {
+  relationship: {
+    from_table: "", to_table: "", description: "",
+    join_type: "conceptual",
+    join_fields: [{ from_field: "", to_field: "", match_type: "exact" }],
+    join_possible: false, workaround: "",
+  },
+  calculation: {
+    name: "", formula_display: "", result_type: "currency", result_unit: "EUR",
+    components: [{
+      id: "comp1", label: "", source_table: "", aggregation: "sum",
+      value_column: "amount", sign: "+",
+      filters: [{ column: "", operator: "eq", value: "" }],
+    }],
+    executable: false,
+  },
+  transformation: {
+    name: "", source_table: "", description: "",
+    input_grain: "", output_grain: "", operation: "aggregate",
+    operation_config: { group_by: [], aggregations: [], filters: [] },
+    executable: false,
+  },
+  definition: {
+    term: "", aliases: [],
+    applies_to: { table: "", column: "", operator: "eq", value: "" },
+    includes_sign_convention: false, sign_convention: "",
+  },
+  note: {
+    subject: "", category: "other", description: "",
+    affects: { tables: [], columns: [], values: [] },
+    suggested_action: "",
+  },
+};
+
+function KnowledgeEntryCard({ entry, onConfirm, onEdit, onDelete }) {
+  const cfg = KNOWLEDGE_TYPES[entry.entry_type] || { label: "Unknown", icon: "❓", color: "#888" };
+  const c = entry.content || {};
+
+  let title = cfg.label;
+  if (entry.entry_type === "relationship" && c.from_table && c.to_table) title = `${c.from_table} ↔ ${c.to_table}`;
+  else if (entry.entry_type === "calculation" && c.name) title = c.name;
+  else if (entry.entry_type === "transformation" && c.name) title = c.name;
+  else if (entry.entry_type === "definition" && c.term) title = c.term;
+  else if (entry.entry_type === "note" && c.subject) title = c.subject;
+
+  const isSuggested = entry.confidence === "suggested";
+  const isRejected = entry.confidence === "rejected";
+
+  return (
+    <div style={{
+      background: isRejected ? "#fef2f2" : "#fff",
+      borderRadius: 8, padding: "10px 14px", marginBottom: 6,
+      border: `1px solid ${isSuggested ? "#fbbf2466" : C.border}`,
+      opacity: isRejected ? 0.5 : 1,
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+        <span style={{ fontSize: 14 }}>{cfg.icon}</span>
+        <span style={{ fontSize: 12, fontWeight: 600, color: cfg.color }}>{title}</span>
+        <span style={{
+          fontSize: 9, padding: "1px 6px", borderRadius: 8, fontWeight: 600,
+          background: (entry.source === "chat_agent" || entry.source === "ai_agent") ? "#dbeafe" : "#f0fdf4",
+          color: (entry.source === "chat_agent" || entry.source === "ai_agent") ? "#2563eb" : "#16a34a",
+        }}>
+          {(entry.source === "chat_agent" || entry.source === "ai_agent") ? "AI" : "Manual"}
+        </span>
+        {isSuggested && (
+          <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 8, background: "#fef3c7", color: "#d97706", fontWeight: 600 }}>suggested</span>
+        )}
+        <div style={{ flex: 1 }} />
+        {isSuggested && (
+          <button onClick={() => onConfirm(entry.id)} style={{
+            fontSize: 10, padding: "2px 8px", borderRadius: 6,
+            background: "#16a34a", color: "#fff", border: "none", cursor: "pointer",
+          }}>✓ Confirm</button>
+        )}
+        <button onClick={() => onEdit(entry)} style={{
+          fontSize: 10, padding: "2px 8px", borderRadius: 6,
+          background: "#f3f4f6", color: "#666", border: "none", cursor: "pointer",
+        }}>Edit</button>
+        <span onClick={() => onDelete(entry.id)} style={{ cursor: "pointer", color: "#9ca3af", fontSize: 14, padding: "0 2px" }}>×</span>
+      </div>
+      <div style={{ fontSize: 12, color: "#374151", lineHeight: 1.5 }}>{entry.plain_text}</div>
+      {entry.entry_type === "relationship" && c.join_fields?.length > 0 && (
+        <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4, padding: "4px 8px", background: "#f9fafb", borderRadius: 4 }}>
+          Join: {c.join_fields.map(j => `${j.from_field} → ${j.to_field}`).join(", ")}
+          {!c.join_possible && " (conceptual — no direct SQL join)"}
+        </div>
+      )}
+      {entry.entry_type === "calculation" && c.formula_display && (
+        <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4, padding: "4px 8px", background: "#f9fafb", borderRadius: 4, fontFamily: "monospace" }}>
+          {c.formula_display}
+          {c.executable === false && <span style={{ fontSize: 9, color: "#9ca3af", marginLeft: 8 }}>(on-demand)</span>}
+        </div>
+      )}
+      {entry.entry_type === "transformation" && (c.input_grain || c.description) && (
+        <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4, padding: "4px 8px", background: "#f9fafb", borderRadius: 4 }}>
+          {c.input_grain && c.output_grain ? `${c.input_grain} → ${c.output_grain}` : c.description || ""}
+          {c.executable === false && <span style={{ fontSize: 9, color: "#9ca3af", marginLeft: 8 }}>(on-demand)</span>}
+        </div>
+      )}
+      {entry.entry_type === "definition" && c.applies_to?.column && (
+        <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4, padding: "4px 8px", background: "#f9fafb", borderRadius: 4 }}>
+          Filter: {c.applies_to.column} {c.applies_to.operator || "="} {String(c.applies_to.value)}
+          {c.aliases?.length > 0 && ` · aliases: ${c.aliases.join(", ")}`}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function KnowledgeEditModal({ entry, onSave, onClose }) {
+  const [plainText, setPlainText] = useState(entry?.plain_text || "");
+  const [contentJson, setContentJson] = useState(JSON.stringify(entry?.content || {}, null, 2));
+  const [error, setError] = useState(null);
+
+  if (!entry) return null;
+
+  const handleSave = () => {
+    try {
+      const parsed = JSON.parse(contentJson);
+      onSave(entry.id, { plain_text: plainText, content: parsed });
+      onClose();
+    } catch { setError("Invalid JSON"); }
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}>
+      <div style={{ background: "#fff", borderRadius: 12, padding: 24, width: 500, maxHeight: "80vh", overflow: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.2)" }}>
+        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 16 }}>Edit Knowledge Entry</div>
+        <label style={{ fontSize: 11, fontWeight: 600, color: "#555" }}>Summary</label>
+        <textarea value={plainText} onChange={e => setPlainText(e.target.value)}
+          style={{ width: "100%", padding: 8, fontSize: 12, borderRadius: 6, border: "1px solid #ddd", marginBottom: 12, minHeight: 60, fontFamily: "inherit", resize: "vertical" }} />
+        <label style={{ fontSize: 11, fontWeight: 600, color: "#555" }}>Structured Content (JSON)</label>
+        <textarea value={contentJson} onChange={e => { setContentJson(e.target.value); setError(null); }}
+          style={{ width: "100%", padding: 8, fontSize: 11, borderRadius: 6, border: `1px solid ${error ? "#ef4444" : "#ddd"}`, marginBottom: 4, minHeight: 160, fontFamily: "monospace", resize: "vertical" }} />
+        {error && <div style={{ color: "#ef4444", fontSize: 11, marginBottom: 8 }}>{error}</div>}
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 12 }}>
+          <button onClick={onClose} style={{ padding: "6px 16px", fontSize: 12, borderRadius: 6, background: "#f3f4f6", color: "#555", border: "none", cursor: "pointer" }}>Cancel</button>
+          <button onClick={handleSave} style={{ padding: "6px 16px", fontSize: 12, borderRadius: 6, background: "#2563eb", color: "#fff", border: "none", cursor: "pointer" }}>Save Changes</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AddKnowledgeModal({ datasetId, onSaved, onClose }) {
+  const [entryType, setEntryType] = useState("relationship");
+  const [plainText, setPlainText] = useState("");
+  const [contentJson, setContentJson] = useState(JSON.stringify(KNOWLEDGE_CONTENT_TEMPLATES.relationship, null, 2));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+
+  const handleTypeChange = (type) => {
+    setEntryType(type);
+    setContentJson(JSON.stringify(KNOWLEDGE_CONTENT_TEMPLATES[type] || {}, null, 2));
+    setError(null);
+  };
+
+  const handleSave = async () => {
+    if (!plainText.trim()) return;
+    setSaving(true);
+    try {
+      const content = JSON.parse(contentJson);
+      const created = await createKnowledge(datasetId, {
+        entry_type: entryType, content, plain_text: plainText,
+        source: "user_manual", confidence: "confirmed",
+      });
+      onSaved(created);
+      onClose();
+    } catch (e) {
+      setError(e.message?.includes("JSON") || contentJson ? "Invalid JSON in content" : e.message);
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}>
+      <div style={{ background: "#fff", borderRadius: 12, padding: 24, width: 520, maxHeight: "80vh", overflow: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.2)" }}>
+        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 16 }}>Add Knowledge</div>
+        <label style={{ fontSize: 11, fontWeight: 600, color: "#555" }}>Type</label>
+        <select value={entryType} onChange={e => handleTypeChange(e.target.value)}
+          style={{ width: "100%", padding: 6, fontSize: 12, borderRadius: 6, border: "1px solid #ddd", marginBottom: 12, fontFamily: "inherit" }}>
+          {Object.entries(KNOWLEDGE_TYPES).map(([k, v]) => (
+            <option key={k} value={k}>{v.icon} {v.label}</option>
+          ))}
+        </select>
+        <label style={{ fontSize: 11, fontWeight: 600, color: "#555" }}>Summary</label>
+        <textarea value={plainText} onChange={e => setPlainText(e.target.value)}
+          placeholder="Brief description..."
+          style={{ width: "100%", padding: 8, fontSize: 12, borderRadius: 6, border: "1px solid #ddd", marginBottom: 12, minHeight: 50, fontFamily: "inherit", resize: "vertical" }} />
+        <label style={{ fontSize: 11, fontWeight: 600, color: "#555" }}>Structured Content (JSON)</label>
+        <textarea value={contentJson} onChange={e => { setContentJson(e.target.value); setError(null); }}
+          style={{ width: "100%", padding: 8, fontSize: 11, borderRadius: 6, border: `1px solid ${error ? "#ef4444" : "#ddd"}`, marginBottom: 4, minHeight: 140, fontFamily: "monospace", resize: "vertical" }} />
+        {error && <div style={{ color: "#ef4444", fontSize: 11, marginBottom: 8 }}>{error}</div>}
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 12 }}>
+          <button onClick={onClose} style={{ padding: "6px 16px", fontSize: 12, borderRadius: 6, background: "#f3f4f6", color: "#555", border: "none", cursor: "pointer" }}>Cancel</button>
+          <button onClick={handleSave} disabled={saving || !plainText.trim()} style={{
+            padding: "6px 16px", fontSize: 12, borderRadius: 6,
+            background: "#2563eb", color: "#fff", border: "none",
+            cursor: saving ? "wait" : "pointer", opacity: !plainText.trim() ? 0.5 : 1,
+          }}>{saving ? "Saving…" : "Save"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function KnowledgePanel({ datasetId, knowledgeRefreshKey }) {
   const [entries, setEntries] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [editingId, setEditingId] = useState(null);
-  const [editText, setEditText] = useState("");
+  const [editingEntry, setEditingEntry] = useState(null);
   const [addOpen, setAddOpen] = useState(false);
-  const [newEntry, setNewEntry] = useState({ entry_type: "annotation", plain_text: "" });
 
   useEffect(() => {
     if (!datasetId) return;
@@ -876,6 +1076,20 @@ function KnowledgePanel({ datasetId, knowledgeRefreshKey }) {
       .finally(() => setLoading(false));
   }, [datasetId, knowledgeRefreshKey]);
 
+  async function handleConfirm(id) {
+    try {
+      const updated = await updateKnowledge(id, { confidence: "confirmed" });
+      setEntries(p => p.map(e => e.id === id ? updated : e));
+    } catch (e) { console.error(e); }
+  }
+
+  async function handleSaveEdit(id, updates) {
+    try {
+      const updated = await updateKnowledge(id, updates);
+      setEntries(p => p.map(e => e.id === id ? updated : e));
+    } catch (e) { console.error(e); }
+  }
+
   async function handleDelete(id) {
     try {
       await deleteKnowledge(id);
@@ -883,88 +1097,61 @@ function KnowledgePanel({ datasetId, knowledgeRefreshKey }) {
     } catch (e) { console.error(e); }
   }
 
-  async function handleSaveEdit(id) {
-    try {
-      const updated = await updateKnowledge(id, { plain_text: editText });
-      setEntries(p => p.map(e => e.id === id ? updated : e));
-      setEditingId(null);
-    } catch (e) { console.error(e); }
-  }
-
-  async function handleAdd() {
-    if (!newEntry.plain_text.trim()) return;
-    try {
-      const created = await createKnowledge(datasetId, { ...newEntry, source: "user" });
-      setEntries(p => [created, ...p]);
-      setNewEntry({ entry_type: "annotation", plain_text: "" });
-      setAddOpen(false);
-    } catch (e) { console.error(e); }
-  }
+  // Group by type for display
+  const byType = Object.fromEntries(
+    Object.keys(KNOWLEDGE_TYPES).map(t => [t, entries.filter(e => e.entry_type === t)])
+  );
+  const hasEntries = entries.length > 0;
 
   return (
     <div style={{ ...S.card, marginTop: 14 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
         <div style={S.cardT}>Knowledge Base</div>
-        <button onClick={() => setAddOpen(!addOpen)} style={S.btn("primary", true)}>+ Add</button>
+        <button onClick={() => setAddOpen(true)} style={S.btn("primary", true)}>+ Add</button>
       </div>
 
       {addOpen && (
-        <div style={{ background: C.bg, borderRadius: 8, padding: 12, border: `1px solid ${C.border}`, marginBottom: 12 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 3fr auto", gap: 8, alignItems: "end" }}>
-            <div>
-              <label style={{ fontSize: 10, color: C.textMuted, fontWeight: 600 }}>Type</label>
-              <select style={{ ...S.select, width: "100%", fontSize: 11 }} value={newEntry.entry_type} onChange={e => setNewEntry(p => ({ ...p, entry_type: e.target.value }))}>
-                {Object.entries(KNOWLEDGE_TYPE_CONFIG).map(([k, v]) => (
-                  <option key={k} value={k}>{v.icon} {v.label}</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label style={{ fontSize: 10, color: C.textMuted, fontWeight: 600 }}>Description</label>
-              <input style={{ ...S.input, fontSize: 11 }} value={newEntry.plain_text} onChange={e => setNewEntry(p => ({ ...p, plain_text: e.target.value }))}
-                onKeyDown={e => e.key === "Enter" && handleAdd()} placeholder="Describe what you know..." />
-            </div>
-            <button onClick={handleAdd} style={S.btn("primary", true)}>Save</button>
-          </div>
-        </div>
+        <AddKnowledgeModal
+          datasetId={datasetId}
+          onSaved={created => setEntries(p => [created, ...p])}
+          onClose={() => setAddOpen(false)}
+        />
+      )}
+      {editingEntry && (
+        <KnowledgeEditModal
+          entry={editingEntry}
+          onSave={handleSaveEdit}
+          onClose={() => setEditingEntry(null)}
+        />
       )}
 
       {loading ? (
         <div style={{ color: C.textMuted, fontSize: 12 }}>Loading…</div>
-      ) : entries.length === 0 ? (
-        <div style={{ color: C.textMuted, fontSize: 12, fontStyle: "italic" }}>No knowledge entries yet. Use the AI assistant to explore and document your data.</div>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          {entries.map(e => {
-            const cfg = KNOWLEDGE_TYPE_CONFIG[e.entry_type] || { icon: "📝", color: C.textMuted, label: e.entry_type };
-            return (
-              <div key={e.id} style={{ background: C.bg, borderRadius: 8, padding: "8px 12px", border: `1px solid ${C.border}`, display: "flex", gap: 10, alignItems: "flex-start" }}>
-                <span style={{ fontSize: 14, flexShrink: 0, marginTop: 1 }}>{cfg.icon}</span>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
-                    <span style={{ ...S.badge(cfg.color), fontSize: 9 }}>{cfg.label}</span>
-                    {e.confidence && <span style={{ ...S.badge(e.confidence === "high" ? C.green : e.confidence === "medium" ? C.amber : C.textMuted), fontSize: 9 }}>{e.confidence}</span>}
-                    <span style={{ ...S.badge(e.source === "ai_agent" ? C.purple : C.textMuted), fontSize: 9 }}>{e.source === "ai_agent" ? "AI" : "You"}</span>
-                  </div>
-                  {editingId === e.id ? (
-                    <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
-                      <input style={{ ...S.input, fontSize: 11, flex: 1 }} value={editText} onChange={ev => setEditText(ev.target.value)}
-                        onKeyDown={ev => { if (ev.key === "Enter") handleSaveEdit(e.id); if (ev.key === "Escape") setEditingId(null); }} autoFocus />
-                      <button onClick={() => handleSaveEdit(e.id)} style={S.btn("primary", true)}>Save</button>
-                      <button onClick={() => setEditingId(null)} style={S.btn("ghost", true)}>✕</button>
-                    </div>
-                  ) : (
-                    <div style={{ fontSize: 12, color: C.text, lineHeight: 1.5 }}>{e.plain_text}</div>
-                  )}
-                </div>
-                <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
-                  <span onClick={() => { setEditingId(e.id); setEditText(e.plain_text); }} style={{ cursor: "pointer", color: C.textMuted, fontSize: 12, padding: "2px 4px" }} title="Edit">✎</span>
-                  <span onClick={() => handleDelete(e.id)} style={{ cursor: "pointer", color: C.textMuted, fontSize: 13, padding: "2px 4px" }} title="Delete">×</span>
-                </div>
-              </div>
-            );
-          })}
+      ) : !hasEntries ? (
+        <div style={{ color: C.textMuted, fontSize: 12, fontStyle: "italic" }}>
+          No knowledge entries yet. Ask the AI assistant to explore your data, or use + Add to document it manually.
         </div>
+      ) : (
+        Object.entries(KNOWLEDGE_TYPES).map(([type, cfg]) => {
+          const typeEntries = byType[type] || [];
+          if (!typeEntries.length) return null;
+          return (
+            <div key={type} style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: cfg.color, marginBottom: 6 }}>
+                {cfg.icon} {cfg.label} ({typeEntries.length})
+              </div>
+              {typeEntries.map(e => (
+                <KnowledgeEntryCard
+                  key={e.id}
+                  entry={e}
+                  onConfirm={handleConfirm}
+                  onEdit={setEditingEntry}
+                  onDelete={handleDelete}
+                />
+              ))}
+            </div>
+          );
+        })
       )}
     </div>
   );
@@ -2202,7 +2389,7 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
 // ═══════════════════════════════════════════════════════════════
 // CHAT PANEL
 // ═══════════════════════════════════════════════════════════════
-function ChatPanel({ baseline, scenarios, setScenarios, setActiveTab, datasetId, onKnowledgeSaved }) {
+function ChatPanel({ baseline, scenarios, setScenarios, setActiveTab, datasetId, onKnowledgeSaved, pendingOnboardingId, onOnboardingConsumed }) {
   const [messages, setMessages] = useState([
     { role: "assistant", content: "Data loaded. Ask me anything about your data, or say **\"What if…\"** to build a scenario." }
   ]);
@@ -2221,18 +2408,25 @@ function ChatPanel({ baseline, scenarios, setScenarios, setActiveTab, datasetId,
     return () => clearTimeout(t);
   }, [knowledgeNotif]);
 
-  async function send() {
-    if (!input.trim() || loading || !datasetId) return;
-    const msg = input.trim();
-    setInput("");
+  // Trigger onboarding when a new dataset finishes profiling
+  useEffect(() => {
+    if (!pendingOnboardingId || !datasetId || pendingOnboardingId !== datasetId || loading) return;
+    onOnboardingConsumed?.();
+    sendMessage("__ONBOARDING_START__");
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingOnboardingId, datasetId]);
+
+  async function sendMessage(msg) {
+    if (!msg || loading || !datasetId) return;
+    const isOnboarding = msg === "__ONBOARDING_START__";
     setLoading(true);
     const history = messages
-      .filter(m => m.role !== "system")
+      .filter(m => m.role !== "system" && m.content !== "__ONBOARDING_START__")
       .map(m => ({ role: m.role, content: m.content }));
-    setMessages(p => [...p, { role: "user", content: msg }]);
-
-    // Add a placeholder assistant message to stream into
-    setMessages(p => [...p, { role: "assistant", content: "" }]);
+    // Don't display the synthetic onboarding trigger in the chat
+    if (!isOnboarding) {
+      setMessages(p => [...p, { role: "user", content: msg }]);
+    }
     const abortCtrl = new AbortController();
     abortRef.current = abortCtrl;
     const pendingRules = [];
@@ -2343,6 +2537,13 @@ function ChatPanel({ baseline, scenarios, setScenarios, setActiveTab, datasetId,
     setLoading(false);
   }
 
+  function send() {
+    if (!input.trim() || loading) return;
+    const msg = input.trim();
+    setInput("");
+    sendMessage(msg);
+  }
+
   const agentLabel = currentAgent === "data_understanding" ? "🔍 Data Agent" : "📊 Scenario Agent";
   const agentColor = currentAgent === "data_understanding" ? C.purple : C.brand;
 
@@ -2356,7 +2557,7 @@ function ChatPanel({ baseline, scenarios, setScenarios, setActiveTab, datasetId,
         <span style={{ ...S.badge(agentColor), fontSize: 9 }}>{agentLabel}</span>
       </div>
       {knowledgeNotif && (
-        <div style={{ padding: "8px 14px", background: C.purpleBg, borderBottom: `1px solid ${C.purple}22`, fontSize: 11, color: C.purple, display: "flex", alignItems: "flex-start", gap: 6 }}>
+        <div style={{ padding: "8px 14px", background: C.purpleBg, borderBottom: `1px solid ${C.purple}22`, borderLeft: `3px solid ${C.purple}`, fontSize: 11, color: C.purple, display: "flex", alignItems: "flex-start", gap: 6 }}>
           <span style={{ flexShrink: 0 }}>💡</span>
           <span style={{ flex: 1, lineHeight: 1.4 }}>Saved: {knowledgeNotif.text}</span>
           <span onClick={() => setKnowledgeNotif(null)} style={{ cursor: "pointer", opacity: 0.5, flexShrink: 0 }}>×</span>
@@ -2365,8 +2566,10 @@ function ChatPanel({ baseline, scenarios, setScenarios, setActiveTab, datasetId,
       <div style={{ flex: 1, overflow: "auto", padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
         {messages.map((m, i) => (
           <div key={i} style={{ padding: "10px 14px", borderRadius: 10, fontSize: 12, lineHeight: 1.6, background: m.role === "user" ? C.brandLight : C.bg, border: `1px solid ${m.role === "user" ? C.brandMid : C.border}`, alignSelf: m.role === "user" ? "flex-end" : "flex-start", maxWidth: "92%" }}>
-            {m.role === "assistant" && m.agent === "data_understanding" && (
-              <div style={{ fontSize: 9, color: C.purple, fontWeight: 600, marginBottom: 4 }}>🔍 Data Agent</div>
+            {m.role === "assistant" && m.agent && (
+              <div style={{ fontSize: 9, color: m.agent === "data_understanding" ? C.purple : C.brand, fontWeight: 600, marginBottom: 4 }}>
+                {m.agent === "data_understanding" ? "🔍 Data Agent" : "📊 Scenario Agent"}
+              </div>
             )}
             {m.content.split("\n").map((l, j) => {
               let h = l.replace(/\*\*(.*?)\*\*/g, '<b>$1</b>');
@@ -2741,6 +2944,18 @@ export default function App() {
     [schemaList]
   );
 
+  // ── Onboarding trigger — fire once per dataset when profiling completes ──
+  const [pendingOnboardingId, setPendingOnboardingId] = useState(null);
+  useEffect(() => {
+    if (!factDataset?.dataset.ai_analyzed || !factDataset?.dataset.id) return;
+    const dsId = factDataset.dataset.id;
+    const key = `databobiq_onboarded_${dsId}`;
+    if (!localStorage.getItem(key)) {
+      localStorage.setItem(key, "true");
+      setPendingOnboardingId(dsId);
+    }
+  }, [factDataset?.dataset.ai_analyzed, factDataset?.dataset.id]);
+
   // ── Scenarios from API ──────────────────────────────────────────
   const { data: apiScenarios = [] } = useQuery({
     queryKey: ["scenarios", factDataset?.dataset.id],
@@ -2912,7 +3127,7 @@ export default function App() {
           {tab === "actuals" && <ActualsView baseline={baseline} schema={schema} />}
           {tab === "scenarios" && <ScenariosView baseline={baseline} scenarios={scenarios} setScenarios={handleSetScenarios} schema={schema} factDatasetId={factDataset?.dataset.id} relIds={relIds} />}
         </div>
-        <ChatPanel baseline={baseline} scenarios={scenarios} setScenarios={handleSetScenarios} setActiveTab={setTab} datasetId={factDataset?.dataset.id} onKnowledgeSaved={() => setKnowledgeRefreshKey(k => k + 1)} />
+        <ChatPanel baseline={baseline} scenarios={scenarios} setScenarios={handleSetScenarios} setActiveTab={setTab} datasetId={factDataset?.dataset.id} onKnowledgeSaved={() => setKnowledgeRefreshKey(k => k + 1)} pendingOnboardingId={pendingOnboardingId} onOnboardingConsumed={() => setPendingOnboardingId(null)} />
       </div>
       <UploadModal
         isOpen={uploadOpen}

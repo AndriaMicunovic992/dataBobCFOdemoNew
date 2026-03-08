@@ -247,13 +247,17 @@ class KnowledgeEntry(Base):
     dataset_id: Mapped[str] = mapped_column(
         String, ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False
     )
-    # unmapped_relationship | calculation | data_transformation | term_definition |
-    # annotation | interpretation_rule | metric_definition | dataset_mapping | relationship_hint
+    # entry_type values (v2 — consolidated):
+    #   "relationship"     — cross-table connection (with or without FK)
+    #   "calculation"      — derived metric / formula (Level 2-ready)
+    #   "transformation"   — data reshaping / aggregation rule (Level 2-ready)
+    #   "definition"       — business term, field meaning, sign convention
+    #   "note"             — data quirk, exception, free-form context
     entry_type: Mapped[str] = mapped_column(String, nullable=False)
     plain_text: Mapped[str] = mapped_column(Text, nullable=False)
     content: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-    confidence: Mapped[str | None] = mapped_column(String, nullable=True)  # high | medium | low
-    source: Mapped[str] = mapped_column(String, nullable=False, default="ai_agent")  # ai_agent | user
+    confidence: Mapped[str | None] = mapped_column(String, nullable=True)  # confirmed | suggested | rejected
+    source: Mapped[str] = mapped_column(String, nullable=False, default="ai_agent")  # ai_agent | chat_agent | user | user_manual
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
