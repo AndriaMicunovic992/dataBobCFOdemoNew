@@ -23,7 +23,7 @@ from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.database import get_db, sync_engine
-from app.models.metadata import Dataset, DatasetColumn, DatasetRelationship, Scenario, SemanticColumn, SemanticValueLabel, TransformationStep
+from app.models.metadata import Dataset, DatasetColumn, DatasetRelationship, KnowledgeEntry, Scenario, SemanticColumn, SemanticValueLabel, TransformationStep
 from app.schemas.api import (
     BaselineRequest,
     BaselineResponse,
@@ -34,6 +34,9 @@ from app.schemas.api import (
     DatasetRelationshipResponse,
     DatasetRelationshipUpdate,
     DatasetResponse,
+    KnowledgeEntryCreate,
+    KnowledgeEntryResponse,
+    KnowledgeEntryUpdate,
     OrderByClause,
     QueryRequest,
     QueryResponse,
@@ -1864,3 +1867,79 @@ async def suggest_transformation(
         step=TransformationStepResponse.model_validate(step),
         preview=preview,
     )
+
+
+# ---------------------------------------------------------------------------
+# Knowledge entries
+# ---------------------------------------------------------------------------
+
+@router.get("/datasets/{dataset_id}/knowledge", response_model=list[KnowledgeEntryResponse])
+async def list_knowledge(dataset_id: str, db: AsyncSession = Depends(get_db)):
+    """List all knowledge entries for a dataset."""
+    result = await db.execute(
+        select(KnowledgeEntry)
+        .where(KnowledgeEntry.dataset_id == dataset_id)
+        .order_by(KnowledgeEntry.created_at.desc())
+    )
+    return [KnowledgeEntryResponse.model_validate(e) for e in result.scalars().all()]
+
+
+@router.post("/datasets/{dataset_id}/knowledge", response_model=KnowledgeEntryResponse, status_code=201)
+async def create_knowledge(
+    dataset_id: str,
+    body: KnowledgeEntryCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a new knowledge entry for a dataset."""
+    r = await db.execute(select(Dataset).where(Dataset.id == dataset_id, Dataset.status != "deleted"))
+    if r.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    entry = KnowledgeEntry(
+        id=uuid.uuid4().hex,
+        dataset_id=dataset_id,
+        entry_type=body.entry_type,
+        plain_text=body.plain_text,
+        content=body.content,
+        confidence=body.confidence,
+        source=body.source,
+    )
+    db.add(entry)
+    await db.commit()
+    await db.refresh(entry)
+    return KnowledgeEntryResponse.model_validate(entry)
+
+
+@router.put("/knowledge/{entry_id}", response_model=KnowledgeEntryResponse)
+async def update_knowledge(
+    entry_id: str,
+    body: KnowledgeEntryUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    """Update a knowledge entry."""
+    result = await db.execute(select(KnowledgeEntry).where(KnowledgeEntry.id == entry_id))
+    entry = result.scalar_one_or_none()
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Knowledge entry not found")
+
+    if body.plain_text is not None:
+        entry.plain_text = body.plain_text
+    if body.content is not None:
+        entry.content = body.content
+    if body.confidence is not None:
+        entry.confidence = body.confidence
+
+    await db.commit()
+    await db.refresh(entry)
+    return KnowledgeEntryResponse.model_validate(entry)
+
+
+@router.delete("/knowledge/{entry_id}", status_code=204)
+async def delete_knowledge(entry_id: str, db: AsyncSession = Depends(get_db)):
+    """Delete a knowledge entry."""
+    result = await db.execute(select(KnowledgeEntry).where(KnowledgeEntry.id == entry_id))
+    entry = result.scalar_one_or_none()
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Knowledge entry not found")
+    await db.delete(entry)
+    await db.commit()

@@ -120,6 +120,24 @@ export async function computeScenario(scenarioId, factDatasetId, relationshipIds
   return req(`/scenarios/${scenarioId}/compute`, { method: 'POST', ...json(body) })
 }
 
+// ── Knowledge entries ─────────────────────────────────────────────────────────
+
+export async function getKnowledge(datasetId) {
+  return req(`/datasets/${datasetId}/knowledge`)
+}
+
+export async function createKnowledge(datasetId, body) {
+  return req(`/datasets/${datasetId}/knowledge`, { method: 'POST', ...json(body) })
+}
+
+export async function updateKnowledge(entryId, body) {
+  return req(`/knowledge/${entryId}`, { method: 'PUT', ...json(body) })
+}
+
+export async function deleteKnowledge(entryId) {
+  return req(`/knowledge/${entryId}`, { method: 'DELETE' })
+}
+
 // ── Chat (SSE streaming) ─────────────────────────────────────────────────────
 
 /**

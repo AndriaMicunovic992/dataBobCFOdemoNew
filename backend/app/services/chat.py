@@ -208,6 +208,111 @@ TOOLS = [
     },
 ]
 
+# Tools for the Data Understanding Agent (a separate agent persona)
+DATA_UNDERSTANDING_TOOLS = [
+    {
+        "name": "save_knowledge",
+        "description": (
+            "Save a piece of structured knowledge about the dataset to the knowledge base. "
+            "Use this to capture relationships, calculations, business rules, or definitions "
+            "that you discover through conversation or data exploration. "
+            "Saved knowledge is shown in the Schema view and injected into future agent prompts."
+        ),
+        "input_schema": {
+            "type": "object",
+            "required": ["entry_type", "plain_text"],
+            "properties": {
+                "entry_type": {
+                    "type": "string",
+                    "enum": [
+                        "unmapped_relationship", "calculation", "data_transformation",
+                        "term_definition", "annotation", "interpretation_rule",
+                        "metric_definition", "dataset_mapping", "relationship_hint",
+                    ],
+                    "description": "Category of knowledge being saved",
+                },
+                "plain_text": {
+                    "type": "string",
+                    "description": "Human-readable summary of what was learned",
+                },
+                "content": {
+                    "type": "object",
+                    "description": "Structured details (e.g. formula, column names, conditions)",
+                },
+                "confidence": {
+                    "type": "string",
+                    "enum": ["high", "medium", "low"],
+                    "description": "How confident you are in this knowledge",
+                },
+            },
+        },
+    },
+    {
+        "name": "list_knowledge",
+        "description": (
+            "Retrieve previously saved knowledge entries for this dataset. "
+            "Use this at the start of a data understanding session to see what is already known."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entry_type": {
+                    "type": "string",
+                    "description": "Optional filter by entry type",
+                },
+            },
+        },
+    },
+    {
+        "name": "list_scenarios",
+        "description": "List existing scenarios for this dataset.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "query_data",
+        "description": (
+            "Query the dataset to explore its structure and values. "
+            "Use this to understand what data exists before saving knowledge about it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "required": ["group_by", "value_column"],
+            "properties": {
+                "group_by": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Columns to group by",
+                },
+                "value_column": {
+                    "type": "string",
+                    "description": "Numeric column to aggregate",
+                },
+                "aggregation": {
+                    "type": "string",
+                    "enum": ["sum", "avg", "min", "max", "count"],
+                    "description": "Aggregation function (default: sum)",
+                },
+                "filters": {
+                    "type": "object",
+                    "additionalProperties": {"type": "array", "items": {}},
+                },
+            },
+        },
+    },
+    {
+        "name": "list_dimension_values",
+        "description": "Look up unique values for a column to understand the data.",
+        "input_schema": {
+            "type": "object",
+            "required": ["column_name"],
+            "properties": {
+                "column_name": {"type": "string"},
+                "search": {"type": "string"},
+            },
+        },
+    },
+]
+
 
 # ---------------------------------------------------------------------------
 # System prompt builder
@@ -328,6 +433,10 @@ async def execute_tool(
         return _tool_list_scenarios(dataset_id)
     elif tool_name == "copy_scenario":
         return _tool_copy_scenario(tool_input)
+    elif tool_name == "save_knowledge":
+        return _tool_save_knowledge(tool_input, dataset_id)
+    elif tool_name == "list_knowledge":
+        return _tool_list_knowledge(tool_input, dataset_id)
     else:
         return {"error": f"Unknown tool: {tool_name}"}
 
@@ -581,6 +690,90 @@ def _tool_list_scenarios(dataset_id: str) -> dict:
         return {"error": str(exc)}
 
 
+def _tool_save_knowledge(inp: dict, dataset_id: str) -> dict:
+    """Insert a knowledge entry for the dataset."""
+    import uuid as _uuid
+    from sqlalchemy import text
+
+    entry_type = inp.get("entry_type", "annotation")
+    plain_text = inp.get("plain_text", "")
+    content = inp.get("content") or {}
+    confidence = inp.get("confidence")
+
+    if not plain_text:
+        return {"error": "plain_text is required"}
+
+    try:
+        new_id = _uuid.uuid4().hex
+        with sync_engine.connect() as conn:
+            conn.execute(
+                text("""
+                    INSERT INTO knowledge_entries
+                      (id, dataset_id, entry_type, plain_text, content, confidence, source)
+                    VALUES (:id, :dataset_id, :entry_type, :plain_text, :content::jsonb, :confidence, 'ai_agent')
+                """),
+                {
+                    "id": new_id,
+                    "dataset_id": dataset_id,
+                    "entry_type": entry_type,
+                    "plain_text": plain_text,
+                    "content": json.dumps(content),
+                    "confidence": confidence,
+                },
+            )
+            conn.commit()
+        return {"id": new_id, "entry_type": entry_type, "plain_text": plain_text, "saved": True}
+    except Exception as exc:
+        logger.warning("Failed to save knowledge entry: %s", exc)
+        return {"error": str(exc)}
+
+
+def _tool_list_knowledge(inp: dict, dataset_id: str) -> dict:
+    """Return knowledge entries for the dataset."""
+    from sqlalchemy import text
+
+    entry_type_filter = inp.get("entry_type")
+    try:
+        with sync_engine.connect() as conn:
+            if entry_type_filter:
+                rows = conn.execute(
+                    text("""
+                        SELECT id, entry_type, plain_text, content, confidence, source, created_at
+                        FROM knowledge_entries
+                        WHERE dataset_id = :ds_id AND entry_type = :entry_type
+                        ORDER BY created_at DESC
+                    """),
+                    {"ds_id": dataset_id, "entry_type": entry_type_filter},
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    text("""
+                        SELECT id, entry_type, plain_text, content, confidence, source, created_at
+                        FROM knowledge_entries
+                        WHERE dataset_id = :ds_id
+                        ORDER BY created_at DESC
+                    """),
+                    {"ds_id": dataset_id},
+                ).fetchall()
+
+        entries = [
+            {
+                "id": r[0],
+                "entry_type": r[1],
+                "plain_text": r[2],
+                "content": r[3] if isinstance(r[3], dict) else {},
+                "confidence": r[4],
+                "source": r[5],
+                "created_at": str(r[6]),
+            }
+            for r in rows
+        ]
+        return {"entries": entries, "count": len(entries)}
+    except Exception as exc:
+        logger.warning("Failed to list knowledge entries: %s", exc)
+        return {"error": str(exc)}
+
+
 def _tool_copy_scenario(inp: dict) -> dict:
     """Duplicate an existing scenario under a new name."""
     import uuid as _uuid
@@ -750,6 +943,104 @@ def _build_system_prompt_from_context(context: str) -> str:
     )
 
 
+async def _classify_intent(message: str, client: anthropic.AsyncAnthropic) -> str:
+    """Classify user message intent: 'scenario' or 'data_understanding'.
+
+    Uses a lightweight Claude call to route the conversation to the right agent.
+    Falls back to 'scenario' if classification fails.
+    """
+    if message.strip() == "__ONBOARDING_START__":
+        return "data_understanding"
+
+    # Fast heuristic — no API call needed for obvious scenario phrases
+    scenario_keywords = [
+        "what if", "increase", "decrease", "reduce", "add rule", "create scenario",
+        "scenario", "forecast", "project", "budget", "multiplier", "offset",
+        "rule", "copy scenario", "duplicate", "clone",
+    ]
+    lower = message.lower()
+    if any(kw in lower for kw in scenario_keywords):
+        return "scenario"
+
+    data_keywords = [
+        "explain", "what does", "how is", "how are", "what is", "define",
+        "understand", "describe", "relationship between", "how do",
+        "what columns", "data quality", "missing", "mismatch", "calculated",
+        "formula", "mapping", "glossary", "term", "field",
+    ]
+    if any(kw in lower for kw in data_keywords):
+        return "data_understanding"
+
+    try:
+        resp = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=10,
+            system=(
+                "Classify this message as either 'scenario' (user wants to model what-if scenarios, "
+                "forecasts, or budget changes) or 'data_understanding' (user wants to understand "
+                "data structure, definitions, relationships, or data quality). "
+                "Reply with ONLY the single word: scenario or data_understanding."
+            ),
+            messages=[{"role": "user", "content": message}],
+        )
+        intent = resp.content[0].text.strip().lower()
+        return intent if intent in ("scenario", "data_understanding") else "scenario"
+    except Exception:
+        return "scenario"
+
+
+def _build_data_understanding_prompt(context: str) -> str:
+    """System prompt for the Data Understanding Agent."""
+    return (
+        "You are a Data Understanding Agent for DataBobIQ. Your role is to help users "
+        "understand their data: its structure, columns, relationships, calculations, and business logic.\n\n"
+        "You PROACTIVELY gather and save knowledge about the dataset. When you learn something "
+        "useful (a business rule, a relationship between tables, a formula, a term definition), "
+        "you IMMEDIATELY save it using the save_knowledge tool — without waiting to be asked.\n\n"
+        f"{context}\n\n"
+        "<instructions>\n"
+        "- When the user asks about data structure or business concepts, explore with query_data "
+        "  and list_dimension_values, then save what you learn with save_knowledge.\n"
+        "- KNOWLEDGE TYPES to save:\n"
+        "  * unmapped_relationship: a relationship between tables or columns not yet in the schema\n"
+        "  * calculation: how a metric or KPI is derived from raw columns\n"
+        "  * data_transformation: how raw data needs to be cleaned or reshaped\n"
+        "  * term_definition: what a business term means in this data context\n"
+        "  * annotation: an important note about a column, table, or data quality issue\n"
+        "  * interpretation_rule: how to interpret specific values (e.g. negative = cost)\n"
+        "  * metric_definition: how a business metric is calculated\n"
+        "  * dataset_mapping: how two datasets relate to each other at the business level\n"
+        "  * relationship_hint: a possible but unverified relationship to investigate\n"
+        "- Start sessions by calling list_knowledge to see what is already known, then build on it.\n"
+        "- Be concise in conversation but thorough in what you save to knowledge.\n"
+        "- When the user describes a business rule or calculation, capture it precisely in content.\n"
+        "- If you discover data quality issues (nulls, mismatches, inconsistencies), save them.\n"
+        "- Format numbers clearly. If data appears German, respond in German.\n"
+        "</instructions>"
+    )
+
+
+def _build_onboarding_prompt(context: str) -> str:
+    """System prompt for the onboarding flow triggered after a new dataset is analyzed."""
+    return (
+        "You are the Data Understanding Agent for DataBobIQ. A new dataset was just uploaded "
+        "and analyzed. Your task is to proactively explore it and build a knowledge base.\n\n"
+        f"{context}\n\n"
+        "<onboarding_instructions>\n"
+        "Do the following in order WITHOUT waiting for user input:\n"
+        "1. Call list_knowledge to see if any knowledge already exists.\n"
+        "2. Call list_dimension_values on each key dimension column to understand what values exist.\n"
+        "3. Call query_data to see the top-level breakdown (e.g. total by main category).\n"
+        "4. Save at least 3 knowledge entries covering:\n"
+        "   - What this dataset represents (annotation or term_definition)\n"
+        "   - Key columns and their business meaning (term_definition per column)\n"
+        "   - Any relationships or patterns you notice (relationship_hint or calculation)\n"
+        "5. Summarize what you learned in 2-3 sentences for the user.\n"
+        "Be thorough but efficient — explore the data systematically.\n"
+        "</onboarding_instructions>"
+    )
+
+
 def _resolve_table_name(dataset_id: str) -> str:
     """Resolve the dynamic table name for a dataset_id using the sync engine."""
     from sqlalchemy import text
@@ -797,9 +1088,19 @@ async def stream_chat(
 
     client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY_CHAT)
 
+    # Classify intent to route to the right agent persona
+    is_onboarding = message.strip() == "__ONBOARDING_START__"
+    intent = await _classify_intent(message, client)
+    agent_type = "data_understanding" if intent == "data_understanding" else "scenario"
+
     # Build system prompt: prefer rich semantic context; fall back to legacy schema_info
     if context:
-        system_prompt = _build_system_prompt_from_context(context)
+        if is_onboarding:
+            system_prompt = _build_onboarding_prompt(context)
+        elif agent_type == "data_understanding":
+            system_prompt = _build_data_understanding_prompt(context)
+        else:
+            system_prompt = _build_system_prompt_from_context(context)
         table_name = schema_info["table_name"] if schema_info else ""
     elif schema_info:
         system_prompt = build_system_prompt(schema_info)
@@ -812,6 +1113,9 @@ async def stream_chat(
     if not table_name and dataset_id:
         table_name = _resolve_table_name(dataset_id)
 
+    # Select tools based on agent type
+    active_tools = DATA_UNDERSTANDING_TOOLS if agent_type == "data_understanding" else TOOLS
+
     # Build messages array from history + new user message
     messages: list[dict] = []
     for msg in history:
@@ -819,7 +1123,12 @@ async def stream_chat(
         content = msg.get("content", "")
         if role in ("user", "assistant") and content:
             messages.append({"role": role, "content": content})
-    messages.append({"role": "user", "content": message})
+
+    # Onboarding: send a directive user message; hide the __ONBOARDING_START__ trigger
+    if is_onboarding:
+        messages.append({"role": "user", "content": "Please explore this dataset and save what you learn."})
+    else:
+        messages.append({"role": "user", "content": message})
 
     try:
         for _round in range(_MAX_TOOL_ROUNDS + 1):
@@ -831,7 +1140,7 @@ async def stream_chat(
                 model=_CHAT_MODEL,
                 max_tokens=2048,
                 system=system_prompt,
-                tools=TOOLS,
+                tools=active_tools,
                 messages=messages,
             ) as stream:
                 async for event in stream:
@@ -846,7 +1155,7 @@ async def stream_chat(
                     elif event.type == "content_block_delta":
                         if hasattr(event.delta, "text"):
                             collected_text += event.delta.text
-                            yield _sse_event({"type": "text_delta", "text": event.delta.text})
+                            yield _sse_event({"type": "text_delta", "text": event.delta.text, "agent": agent_type})
                         elif hasattr(event.delta, "partial_json"):
                             # Accumulate tool input JSON incrementally
                             if tool_uses:
@@ -918,6 +1227,16 @@ async def stream_chat(
                         "id": result.get("id"),
                         "name": result.get("name"),
                         "copied_from": result.get("copied_from"),
+                    })
+
+                # Emit knowledge_saved event when knowledge is saved successfully
+                if tu["name"] == "save_knowledge" and result.get("saved"):
+                    yield _sse_event({
+                        "type": "knowledge_saved",
+                        "id": result.get("id"),
+                        "entry_type": result.get("entry_type"),
+                        "plain_text": result.get("plain_text"),
+                        "dataset_id": dataset_id,
                     })
 
                 tool_results.append({

@@ -283,3 +283,35 @@ class TransformationPreviewResponse(BaseModel):
 
 class TransformationSuggestRequest(BaseModel):
     prompt: str
+
+
+# ---------------------------------------------------------------------------
+# Knowledge entries
+# ---------------------------------------------------------------------------
+
+class KnowledgeEntryCreate(BaseModel):
+    entry_type: str
+    plain_text: str
+    content: dict[str, Any] = {}
+    confidence: str | None = None  # high | medium | low
+    source: str = "user"
+
+
+class KnowledgeEntryUpdate(BaseModel):
+    plain_text: str | None = None
+    content: dict[str, Any] | None = None
+    confidence: str | None = None
+
+
+class KnowledgeEntryResponse(BaseModel):
+    id: str
+    dataset_id: str
+    entry_type: str
+    plain_text: str
+    content: dict[str, Any]
+    confidence: str | None = None
+    source: str
+    created_at: datetime
+    updated_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
