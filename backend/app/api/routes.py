@@ -1364,6 +1364,7 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
             history=request.conversation_history,
             context=context,
             baseline_df=baseline_df,
+            agent_mode=request.agent_mode,
         ),
         media_type="text/event-stream",
     )

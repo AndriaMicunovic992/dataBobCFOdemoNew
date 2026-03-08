@@ -1070,6 +1070,7 @@ async def stream_chat(
     context: str = "",
     schema_info: dict | None = None,  # kept for backwards-compat; prefer context
     baseline_df: Any = None,  # pl.DataFrame | None — enriched fact+dim join
+    agent_mode: str = "scenario",  # "data_understanding" | "scenario" — set by frontend tab
 ) -> AsyncGenerator[str, None]:
     """Async generator that yields SSE events for one chat turn.
 
@@ -1090,10 +1091,10 @@ async def stream_chat(
 
     client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY_CHAT)
 
-    # Classify intent to route to the right agent persona
+    # Route to the right agent persona based on the active frontend tab
+    # (agent_mode is set explicitly by the frontend — no intent classifier needed)
     is_onboarding = message.strip() == "__ONBOARDING_START__"
-    intent = await _classify_intent(message, client)
-    agent_type = "data_understanding" if intent == "data_understanding" else "scenario"
+    agent_type = "data_understanding" if (is_onboarding or agent_mode == "data_understanding") else "scenario"
 
     # Build system prompt: prefer rich semantic context; fall back to legacy schema_info
     if context:

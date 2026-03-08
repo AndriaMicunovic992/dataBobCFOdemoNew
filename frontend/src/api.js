@@ -152,7 +152,7 @@ export async function deleteKnowledge(entryId) {
  *   {type:'done'}
  *   {type:'error', message:'...'}
  */
-export async function* streamChat(message, datasetId, history = [], signal) {
+export async function* streamChat(message, datasetId, history = [], signal, agentMode = "scenario") {
   const res = await fetch(`${BASE}/chat`, {
     method: 'POST',
     signal,
@@ -160,6 +160,7 @@ export async function* streamChat(message, datasetId, history = [], signal) {
       message,
       dataset_id: datasetId,
       conversation_history: history,
+      agent_mode: agentMode,
     }),
   })
 
