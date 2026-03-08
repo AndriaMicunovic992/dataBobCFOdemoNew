@@ -1065,6 +1065,46 @@ function SchemaView({ schema, setSchema, relationships, setRelationships, onOpen
 }
 
 // ═══════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
+// SAVED VIEWS BAR
+// ═══════════════════════════════════════════════════════════════
+function SavedViewsBar({ savedViews, onSave, onLoad, onDelete }) {
+  const [isNaming, setIsNaming] = useState(false);
+  const [newName, setNewName] = useState("");
+  const handleSave = () => {
+    if (!newName.trim()) return;
+    onSave(newName.trim());
+    setNewName("");
+    setIsNaming(false);
+  };
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", marginBottom: 8, flexWrap: "wrap", fontSize: 13 }}>
+      <span style={{ fontWeight: 600, color: C.textMuted, marginRight: 4 }}>Saved Views:</span>
+      {savedViews.map(v => (
+        <div key={v.id} style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 10px", borderRadius: 12, background: "#e8f0fe", color: C.brand, cursor: "pointer", fontSize: 12, fontWeight: 500, border: `1px solid ${C.brand}33` }}>
+          <span onClick={() => onLoad(v)} title="Load this view">{v.name}</span>
+          <span onClick={e => { e.stopPropagation(); onDelete(v.id); }} style={{ cursor: "pointer", opacity: 0.6, marginLeft: 2, fontSize: 11 }} title="Delete">×</span>
+        </div>
+      ))}
+      {isNaming ? (
+        <div style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+          <input value={newName} onChange={e => setNewName(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter") handleSave(); if (e.key === "Escape") setIsNaming(false); }}
+            placeholder="View name..." autoFocus
+            style={{ padding: "3px 8px", fontSize: 12, borderRadius: 6, border: `1px solid ${C.border}`, width: 140, outline: "none" }} />
+          <button onClick={handleSave} style={{ padding: "3px 8px", fontSize: 11, borderRadius: 6, background: C.brand, color: "#fff", border: "none", cursor: "pointer" }}>Save</button>
+          <button onClick={() => setIsNaming(false)} style={{ padding: "3px 8px", fontSize: 11, borderRadius: 6, background: C.surface, color: C.textSec, border: `1px solid ${C.border}`, cursor: "pointer" }}>Cancel</button>
+        </div>
+      ) : (
+        <button onClick={() => setIsNaming(true)} style={{ padding: "3px 10px", fontSize: 12, borderRadius: 12, background: C.surface, color: C.textSec, border: `1px dashed ${C.border}`, cursor: "pointer" }}>
+          + Save Current View
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
 // ACTUALS VIEW
 // ═══════════════════════════════════════════════════════════════
 function ActualsView({ baseline, schema }) {
@@ -1076,6 +1116,14 @@ function ActualsView({ baseline, schema }) {
   const [filters, setFilters] = useState({});
   const filtered = useMemo(() => applyFilters(baseline, filters), [baseline, filters]);
 
+  const [savedViews, setSavedViews] = useState(() => {
+    try { const v = localStorage.getItem("databobiq_saved_views_actuals"); return v ? JSON.parse(v) : []; }
+    catch { return []; }
+  });
+  useEffect(() => {
+    localStorage.setItem("databobiq_saved_views_actuals", JSON.stringify(savedViews));
+  }, [savedViews]);
+
   return (
     <div>
       <div style={{ marginBottom: 20 }}>
@@ -1083,6 +1131,12 @@ function ActualsView({ baseline, schema }) {
         <p style={{ color: C.textSec, fontSize: 13 }}>{filtered.length} entries after filters</p>
       </div>
       <div style={S.card}>
+        <SavedViewsBar
+          savedViews={savedViews}
+          onSave={name => setSavedViews(prev => [...prev, { id: String(Date.now()), name, rows: [...rowFs], columns: colF ? [colF] : [], values: valF ? [valF] : [], filters: structuredClone(filters), createdAt: Date.now() }])}
+          onLoad={view => { setRowFs(view.rows || []); setColF((view.columns || [])[0] || ""); setValF((view.values || [])[0] || ""); setFilters(view.filters || {}); }}
+          onDelete={id => setSavedViews(prev => prev.filter(v => v.id !== id))}
+        />
         <div style={{ display: "grid", gridTemplateColumns: "2fr 2fr 1fr", gap: 14, marginBottom: 10 }}>
           <FieldManager label="Row Fields" allFields={dims} selected={rowFs} onChange={setRowFs} color={C.brand} />
           <FieldManager label="Column Field" allFields={dims.filter(f => !rowFs.includes(f))} selected={colF} onChange={setColF} color={C.purple} single />
@@ -1213,6 +1267,15 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
   const [colF, setColF] = useState("");
   const [valF, setValF] = useState(() => "");
   const [filters, setFilters] = useState({});
+
+  const [savedViews, setSavedViews] = useState(() => {
+    try { const v = localStorage.getItem("databobiq_saved_views_scenario"); return v ? JSON.parse(v) : []; }
+    catch { return []; }
+  });
+  useEffect(() => {
+    localStorage.setItem("databobiq_saved_views_scenario", JSON.stringify(savedViews));
+  }, [savedViews]);
+
   const [newRule, setNewRule] = useState({ name: "", type: "multiplier", factor: 1.05, offset: 0, filters: {}, periodFrom: "", periodTo: "", distribution: "use_base" });
   const [ruleFilterFields, setRuleFilterFields] = useState([]);
   const [ruleFilterSearch, setRuleFilterSearch] = useState("");
@@ -1529,6 +1592,12 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
       </div>
 
       <div style={S.card}>
+        <SavedViewsBar
+          savedViews={savedViews}
+          onSave={name => setSavedViews(prev => [...prev, { id: String(Date.now()), name, rows: [...rowFs], columns: colF ? [colF] : [], values: valF ? [valF] : [], filters: structuredClone(filters), createdAt: Date.now() }])}
+          onLoad={view => { setRowFs(view.rows || []); setColF((view.columns || [])[0] || ""); setValF((view.values || [])[0] || ""); setFilters(view.filters || {}); }}
+          onDelete={id => setSavedViews(prev => prev.filter(v => v.id !== id))}
+        />
         <div style={{ display: "grid", gridTemplateColumns: "2fr 2fr 1fr", gap: 14, marginBottom: 10 }}>
           <FieldManager label="Row Fields" allFields={dims} selected={rowFs} onChange={setRowFs} color={C.brand} />
           <FieldManager label="Column Field" allFields={dims.filter(f => !rowFs.includes(f))} selected={colF} onChange={setColF} color={C.purple} single />
@@ -1892,34 +1961,6 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
         </div>
       )}
 
-      {active.size > 0 && rowFs.length > 0 && (
-        <div style={S.card}>
-          <div style={S.cardT}>Comparison Chart</div>
-          <PivotChartView data={comparisonBaselines[scenarios.find(sc => active.has(sc.id))?.name] || filtered} rowFs={rowFs} colF={colF} valF={valF} scenarioData={scOutputs} />
-        </div>
-      )}
-
-      {variance.length > 0 && (
-        <div style={S.card}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-            <div style={S.cardT}>Waterfall Analysis</div>
-            <FieldManager label="" allFields={dims} selected={waterfallField} onChange={setWaterfallField} color={C.purple} single />
-          </div>
-          {effectiveWaterfallField ? (
-            <div style={{ display: "grid", gridTemplateColumns: `repeat(${Math.min(scenarios.filter(sc => active.has(sc.id)).length, 2)}, 1fr)`, gap: 14 }}>
-              {scenarios.filter(sc => active.has(sc.id)).map(sc => (
-                <div key={sc.id}>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: sc.color, marginBottom: 6, textAlign: "center" }}>{sc.name}</div>
-                  <WaterfallChart baseline={comparisonBaselines[sc.name] || filtered} scenarioData={scOutputs[sc.name]} scenarioName={sc.name} scenarioColor={sc.color} rowFs={rowFs} valF={effectiveValF} waterfallField={effectiveWaterfallField} />
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div style={{ textAlign: "center", padding: 24, color: C.textMuted, fontSize: 12 }}>Select a dimension above to break down changes.</div>
-          )}
-        </div>
-      )}
-
       {variance.length > 0 && (
         <div style={S.card}>
           <div style={S.cardT}>Variance Summary</div>
@@ -1947,10 +1988,38 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
         </div>
       )}
 
+      {variance.length > 0 && (
+        <div style={S.card}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <div style={S.cardT}>Waterfall Analysis</div>
+            <FieldManager label="" allFields={dims} selected={waterfallField} onChange={setWaterfallField} color={C.purple} single />
+          </div>
+          {effectiveWaterfallField ? (
+            <div style={{ display: "grid", gridTemplateColumns: `repeat(${Math.min(scenarios.filter(sc => active.has(sc.id)).length, 2)}, 1fr)`, gap: 14 }}>
+              {scenarios.filter(sc => active.has(sc.id)).map(sc => (
+                <div key={sc.id}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: sc.color, marginBottom: 6, textAlign: "center" }}>{sc.name}</div>
+                  <WaterfallChart baseline={comparisonBaselines[sc.name] || filtered} scenarioData={scOutputs[sc.name]} scenarioName={sc.name} scenarioColor={sc.color} rowFs={rowFs} valF={effectiveValF} waterfallField={effectiveWaterfallField} />
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ textAlign: "center", padding: 24, color: C.textMuted, fontSize: 12 }}>Select a dimension above to break down changes.</div>
+          )}
+        </div>
+      )}
+
       {active.size > 0 && rowFs.length > 0 && valF && (
         <div style={S.card}>
           <div style={S.cardT}>Comparison Table</div>
           <ComparisonTable baseline={comparisonBaselines[scenarios.find(sc => active.has(sc.id))?.name] || filtered} scenarioOutputs={scOutputs} rowFs={rowFs} colF={colF} valF={valF} scenarios={scenarios.filter(sc => active.has(sc.id))} />
+        </div>
+      )}
+
+      {active.size > 0 && rowFs.length > 0 && (
+        <div style={S.card}>
+          <div style={S.cardT}>Comparison Chart</div>
+          <PivotChartView data={comparisonBaselines[scenarios.find(sc => active.has(sc.id))?.name] || filtered} rowFs={rowFs} colF={colF} valF={valF} scenarioData={scOutputs} />
         </div>
       )}
 
