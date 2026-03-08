@@ -360,6 +360,7 @@ async def build_agent_context(
     glossary_entries = glossary_from_knowledge + glossary_entries
 
     if glossary_entries:
+        parts.append("  <glossary>")
         seen: set[str] = set()
         for phrase, mapping in glossary_entries[:30]:
             if phrase in seen:

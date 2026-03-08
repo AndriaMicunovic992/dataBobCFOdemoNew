@@ -17,6 +17,10 @@ depends_on = None
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    if inspector.has_table("knowledge_entries"):
+        return  # already created by Base.metadata.create_all on first deploy
     op.create_table(
         "knowledge_entries",
         sa.Column("id", sa.String(), nullable=False),
