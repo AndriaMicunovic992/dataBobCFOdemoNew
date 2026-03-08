@@ -10,6 +10,7 @@ import {
   deleteRelationship as apiDeleteRelationship,
   streamChat,
   getScenarios, createScenario, updateScenario, deleteScenario, computeScenario,
+  getKnowledge, createKnowledge, updateKnowledge, deleteKnowledge,
 } from "./api.js";
 
 // ─── THEME ──────────────────────────────────────────────────────
@@ -845,7 +846,131 @@ function ComparisonTable({ baseline, scenarioOutputs, rowFs, colF, valF, scenari
 // ═══════════════════════════════════════════════════════════════
 // SCHEMA VIEW (with editable roles + editable relationships)
 // ═══════════════════════════════════════════════════════════════
-function SchemaView({ schema, setSchema, relationships, setRelationships, onOpenUpload }) {
+// ─── KNOWLEDGE PANEL ─────────────────────────────────────────────
+const KNOWLEDGE_TYPE_CONFIG = {
+  unmapped_relationship: { icon: "🔗", color: C.brand, label: "Relationship" },
+  calculation: { icon: "🧮", color: C.purple, label: "Calculation" },
+  data_transformation: { icon: "🔄", color: C.amber, label: "Transformation" },
+  term_definition: { icon: "📖", color: C.green, label: "Definition" },
+  annotation: { icon: "📌", color: C.textSec, label: "Note" },
+  interpretation_rule: { icon: "📐", color: C.brandDark, label: "Interpretation" },
+  metric_definition: { icon: "📊", color: C.purple, label: "Metric" },
+  dataset_mapping: { icon: "🗺️", color: C.brand, label: "Mapping" },
+  relationship_hint: { icon: "💡", color: C.amber, label: "Hint" },
+};
+
+function KnowledgePanel({ datasetId, knowledgeRefreshKey }) {
+  const [entries, setEntries] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [editText, setEditText] = useState("");
+  const [addOpen, setAddOpen] = useState(false);
+  const [newEntry, setNewEntry] = useState({ entry_type: "annotation", plain_text: "" });
+
+  useEffect(() => {
+    if (!datasetId) return;
+    setLoading(true);
+    getKnowledge(datasetId)
+      .then(setEntries)
+      .catch(console.error)
+      .finally(() => setLoading(false));
+  }, [datasetId, knowledgeRefreshKey]);
+
+  async function handleDelete(id) {
+    try {
+      await deleteKnowledge(id);
+      setEntries(p => p.filter(e => e.id !== id));
+    } catch (e) { console.error(e); }
+  }
+
+  async function handleSaveEdit(id) {
+    try {
+      const updated = await updateKnowledge(id, { plain_text: editText });
+      setEntries(p => p.map(e => e.id === id ? updated : e));
+      setEditingId(null);
+    } catch (e) { console.error(e); }
+  }
+
+  async function handleAdd() {
+    if (!newEntry.plain_text.trim()) return;
+    try {
+      const created = await createKnowledge(datasetId, { ...newEntry, source: "user" });
+      setEntries(p => [created, ...p]);
+      setNewEntry({ entry_type: "annotation", plain_text: "" });
+      setAddOpen(false);
+    } catch (e) { console.error(e); }
+  }
+
+  return (
+    <div style={{ ...S.card, marginTop: 14 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div style={S.cardT}>Knowledge Base</div>
+        <button onClick={() => setAddOpen(!addOpen)} style={S.btn("primary", true)}>+ Add</button>
+      </div>
+
+      {addOpen && (
+        <div style={{ background: C.bg, borderRadius: 8, padding: 12, border: `1px solid ${C.border}`, marginBottom: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 3fr auto", gap: 8, alignItems: "end" }}>
+            <div>
+              <label style={{ fontSize: 10, color: C.textMuted, fontWeight: 600 }}>Type</label>
+              <select style={{ ...S.select, width: "100%", fontSize: 11 }} value={newEntry.entry_type} onChange={e => setNewEntry(p => ({ ...p, entry_type: e.target.value }))}>
+                {Object.entries(KNOWLEDGE_TYPE_CONFIG).map(([k, v]) => (
+                  <option key={k} value={k}>{v.icon} {v.label}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label style={{ fontSize: 10, color: C.textMuted, fontWeight: 600 }}>Description</label>
+              <input style={{ ...S.input, fontSize: 11 }} value={newEntry.plain_text} onChange={e => setNewEntry(p => ({ ...p, plain_text: e.target.value }))}
+                onKeyDown={e => e.key === "Enter" && handleAdd()} placeholder="Describe what you know..." />
+            </div>
+            <button onClick={handleAdd} style={S.btn("primary", true)}>Save</button>
+          </div>
+        </div>
+      )}
+
+      {loading ? (
+        <div style={{ color: C.textMuted, fontSize: 12 }}>Loading…</div>
+      ) : entries.length === 0 ? (
+        <div style={{ color: C.textMuted, fontSize: 12, fontStyle: "italic" }}>No knowledge entries yet. Use the AI assistant to explore and document your data.</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {entries.map(e => {
+            const cfg = KNOWLEDGE_TYPE_CONFIG[e.entry_type] || { icon: "📝", color: C.textMuted, label: e.entry_type };
+            return (
+              <div key={e.id} style={{ background: C.bg, borderRadius: 8, padding: "8px 12px", border: `1px solid ${C.border}`, display: "flex", gap: 10, alignItems: "flex-start" }}>
+                <span style={{ fontSize: 14, flexShrink: 0, marginTop: 1 }}>{cfg.icon}</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
+                    <span style={{ ...S.badge(cfg.color), fontSize: 9 }}>{cfg.label}</span>
+                    {e.confidence && <span style={{ ...S.badge(e.confidence === "high" ? C.green : e.confidence === "medium" ? C.amber : C.textMuted), fontSize: 9 }}>{e.confidence}</span>}
+                    <span style={{ ...S.badge(e.source === "ai_agent" ? C.purple : C.textMuted), fontSize: 9 }}>{e.source === "ai_agent" ? "AI" : "You"}</span>
+                  </div>
+                  {editingId === e.id ? (
+                    <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+                      <input style={{ ...S.input, fontSize: 11, flex: 1 }} value={editText} onChange={ev => setEditText(ev.target.value)}
+                        onKeyDown={ev => { if (ev.key === "Enter") handleSaveEdit(e.id); if (ev.key === "Escape") setEditingId(null); }} autoFocus />
+                      <button onClick={() => handleSaveEdit(e.id)} style={S.btn("primary", true)}>Save</button>
+                      <button onClick={() => setEditingId(null)} style={S.btn("ghost", true)}>✕</button>
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 12, color: C.text, lineHeight: 1.5 }}>{e.plain_text}</div>
+                  )}
+                </div>
+                <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                  <span onClick={() => { setEditingId(e.id); setEditText(e.plain_text); }} style={{ cursor: "pointer", color: C.textMuted, fontSize: 12, padding: "2px 4px" }} title="Edit">✎</span>
+                  <span onClick={() => handleDelete(e.id)} style={{ cursor: "pointer", color: C.textMuted, fontSize: 13, padding: "2px 4px" }} title="Delete">×</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SchemaView({ schema, setSchema, relationships, setRelationships, onOpenUpload, factDatasetId, knowledgeRefreshKey }) {
   const [addRelOpen, setAddRelOpen] = useState(false);
   const [newRel, setNewRel] = useState({ from: "", to: "", fromCol: "", toCol: "" });
   const [dismissedSuggestions, setDismissedSuggestions] = useState(new Set());
@@ -1060,6 +1185,11 @@ function SchemaView({ schema, setSchema, relationships, setRelationships, onOpen
           </div>
         ))}
       </div>
+
+      {/* Knowledge base panel — shown when a fact dataset is selected */}
+      {factDatasetId && (
+        <KnowledgePanel datasetId={factDatasetId} knowledgeRefreshKey={knowledgeRefreshKey} />
+      )}
     </div>
   );
 }
@@ -2038,15 +2168,24 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
 // ═══════════════════════════════════════════════════════════════
 // CHAT PANEL
 // ═══════════════════════════════════════════════════════════════
-function ChatPanel({ baseline, scenarios, setScenarios, setActiveTab, datasetId }) {
+function ChatPanel({ baseline, scenarios, setScenarios, setActiveTab, datasetId, onKnowledgeSaved }) {
   const [messages, setMessages] = useState([
     { role: "assistant", content: "Data loaded. Ask me anything about your data, or say **\"What if…\"** to build a scenario." }
   ]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [currentAgent, setCurrentAgent] = useState("scenario"); // "scenario" | "data_understanding"
+  const [knowledgeNotif, setKnowledgeNotif] = useState(null); // {text, id}
   const endRef = useRef(null);
   const abortRef = useRef(null);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+
+  // Auto-hide knowledge notifications after 4s
+  useEffect(() => {
+    if (!knowledgeNotif) return;
+    const t = setTimeout(() => setKnowledgeNotif(null), 4000);
+    return () => clearTimeout(t);
+  }, [knowledgeNotif]);
 
   async function send() {
     if (!input.trim() || loading || !datasetId) return;
@@ -2070,11 +2209,15 @@ function ChatPanel({ baseline, scenarios, setScenarios, setActiveTab, datasetId 
     try {
       for await (const event of streamChat(msg, datasetId, history, abortCtrl.signal)) {
         if (event.type === "text_delta") {
+          if (event.agent) setCurrentAgent(event.agent);
           setMessages(p => {
             const next = [...p];
-            next[next.length - 1] = { ...next[next.length - 1], content: next[next.length - 1].content + event.text };
+            next[next.length - 1] = { ...next[next.length - 1], content: next[next.length - 1].content + event.text, agent: event.agent || "scenario" };
             return next;
           });
+        } else if (event.type === "knowledge_saved") {
+          setKnowledgeNotif({ text: event.plain_text, id: event.id });
+          if (onKnowledgeSaved) onKnowledgeSaved();
         } else if (event.type === "scenario_rules") {
           // New plural batch event
           const rules = (event.rules || []).map((r, i) => ({ ...r, id: Date.now() + i }));
@@ -2166,15 +2309,31 @@ function ChatPanel({ baseline, scenarios, setScenarios, setActiveTab, datasetId 
     setLoading(false);
   }
 
+  const agentLabel = currentAgent === "data_understanding" ? "🔍 Data Agent" : "📊 Scenario Agent";
+  const agentColor = currentAgent === "data_understanding" ? C.purple : C.brand;
+
   return (
     <div style={{ width: 340, borderLeft: `1px solid ${C.border}`, display: "flex", flexDirection: "column", background: C.white, flexShrink: 0 }}>
-      <div style={{ padding: "14px 16px", borderBottom: `1px solid ${C.border}`, fontSize: 13, fontWeight: 700, color: C.brand, display: "flex", alignItems: "center", gap: 6 }}>
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke={C.brand} strokeWidth="2" /><path d="M5 8h6M8 5v6" stroke={C.brand} strokeWidth="1.5" strokeLinecap="round" /></svg>
-        AI Assistant
+      <div style={{ padding: "14px 16px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: C.brand, display: "flex", alignItems: "center", gap: 6 }}>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke={C.brand} strokeWidth="2" /><path d="M5 8h6M8 5v6" stroke={C.brand} strokeWidth="1.5" strokeLinecap="round" /></svg>
+          AI Assistant
+        </div>
+        <span style={{ ...S.badge(agentColor), fontSize: 9 }}>{agentLabel}</span>
       </div>
+      {knowledgeNotif && (
+        <div style={{ padding: "8px 14px", background: C.purpleBg, borderBottom: `1px solid ${C.purple}22`, fontSize: 11, color: C.purple, display: "flex", alignItems: "flex-start", gap: 6 }}>
+          <span style={{ flexShrink: 0 }}>💡</span>
+          <span style={{ flex: 1, lineHeight: 1.4 }}>Saved: {knowledgeNotif.text}</span>
+          <span onClick={() => setKnowledgeNotif(null)} style={{ cursor: "pointer", opacity: 0.5, flexShrink: 0 }}>×</span>
+        </div>
+      )}
       <div style={{ flex: 1, overflow: "auto", padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
         {messages.map((m, i) => (
           <div key={i} style={{ padding: "10px 14px", borderRadius: 10, fontSize: 12, lineHeight: 1.6, background: m.role === "user" ? C.brandLight : C.bg, border: `1px solid ${m.role === "user" ? C.brandMid : C.border}`, alignSelf: m.role === "user" ? "flex-end" : "flex-start", maxWidth: "92%" }}>
+            {m.role === "assistant" && m.agent === "data_understanding" && (
+              <div style={{ fontSize: 9, color: C.purple, fontWeight: 600, marginBottom: 4 }}>🔍 Data Agent</div>
+            )}
             {m.content.split("\n").map((l, j) => {
               let h = l.replace(/\*\*(.*?)\*\*/g, '<b>$1</b>');
               if (l.startsWith("• ") || l.startsWith("- ")) return <div key={j} style={{ paddingLeft: 10, marginBottom: 2 }}><span style={{ color: C.brand, marginRight: 4 }}>·</span><span dangerouslySetInnerHTML={{ __html: h.slice(2) }} /></div>;
@@ -2186,7 +2345,7 @@ function ChatPanel({ baseline, scenarios, setScenarios, setActiveTab, datasetId 
         <div ref={endRef} />
       </div>
       <div style={{ padding: 12, borderTop: `1px solid ${C.border}`, display: "flex", gap: 6 }}>
-        <input style={{ ...S.input, flex: 1 }} value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === "Enter" && send()} placeholder="Ask about your data..." />
+        <input style={{ ...S.input, flex: 1 }} value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === "Enter" && send()} placeholder="Ask about your data…" />
         <button style={S.btn("primary", true)} onClick={send} disabled={loading}>→</button>
       </div>
     </div>
@@ -2514,6 +2673,7 @@ export default function App() {
   const [tab, setTab] = useState("schema");
   const [scenarios, setScenarios] = useState([]);
   const [uploadOpen, setUploadOpen] = useState(false);
+  const [knowledgeRefreshKey, setKnowledgeRefreshKey] = useState(0);
 
   // ── Load datasets from API ──────────────────────────────────────
   const { data: schemaList = [], isLoading } = useQuery({
@@ -2714,11 +2874,11 @@ export default function App() {
 
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
         <div style={{ flex: 1, overflow: "auto", padding: 24 }}>
-          {tab === "schema" && <SchemaView schema={schema} setSchema={handleSetSchema} relationships={relationships} setRelationships={handleSetRelationships} onOpenUpload={() => setUploadOpen(true)} />}
+          {tab === "schema" && <SchemaView schema={schema} setSchema={handleSetSchema} relationships={relationships} setRelationships={handleSetRelationships} onOpenUpload={() => setUploadOpen(true)} factDatasetId={factDataset?.dataset.id} knowledgeRefreshKey={knowledgeRefreshKey} />}
           {tab === "actuals" && <ActualsView baseline={baseline} schema={schema} />}
           {tab === "scenarios" && <ScenariosView baseline={baseline} scenarios={scenarios} setScenarios={handleSetScenarios} schema={schema} factDatasetId={factDataset?.dataset.id} relIds={relIds} />}
         </div>
-        <ChatPanel baseline={baseline} scenarios={scenarios} setScenarios={handleSetScenarios} setActiveTab={setTab} datasetId={factDataset?.dataset.id} />
+        <ChatPanel baseline={baseline} scenarios={scenarios} setScenarios={handleSetScenarios} setActiveTab={setTab} datasetId={factDataset?.dataset.id} onKnowledgeSaved={() => setKnowledgeRefreshKey(k => k + 1)} />
       </div>
       <UploadModal
         isOpen={uploadOpen}
