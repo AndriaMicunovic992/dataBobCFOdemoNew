@@ -2389,13 +2389,18 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
 // ═══════════════════════════════════════════════════════════════
 // CHAT PANEL
 // ═══════════════════════════════════════════════════════════════
-function ChatPanel({ baseline, scenarios, setScenarios, setActiveTab, datasetId, onKnowledgeSaved, pendingOnboardingId, onOnboardingConsumed }) {
-  const [messages, setMessages] = useState([
+function ChatPanel({ baseline, scenarios, setScenarios, setActiveTab, activeTab, datasetId, onKnowledgeSaved, pendingOnboardingId, onOnboardingConsumed }) {
+  const [dataModelMessages, setDataModelMessages] = useState([
+    { role: "assistant", content: "I'm the **Data Understanding Agent**. I can help you document relationships, calculations, definitions, and business rules about your data." }
+  ]);
+  const [scenarioMessages, setScenarioMessages] = useState([
     { role: "assistant", content: "Data loaded. Ask me anything about your data, or say **\"What if…\"** to build a scenario." }
   ]);
+  const isDataModelTab = activeTab === "schema";
+  const agentMode = isDataModelTab ? "data_understanding" : "scenario";
+  const messages = isDataModelTab ? dataModelMessages : scenarioMessages;
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [currentAgent, setCurrentAgent] = useState("scenario"); // "scenario" | "data_understanding"
   const [knowledgeNotif, setKnowledgeNotif] = useState(null); // {text, id}
   const endRef = useRef(null);
   const abortRef = useRef(null);
@@ -2416,17 +2421,25 @@ function ChatPanel({ baseline, scenarios, setScenarios, setActiveTab, datasetId,
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingOnboardingId, datasetId]);
 
-  async function sendMessage(msg) {
+  async function sendMessage(msg, forceDataModel = false) {
     if (!msg || loading || !datasetId) return;
     const isOnboarding = msg === "__ONBOARDING_START__";
+    // Onboarding always targets the Data Model agent; otherwise use current tab
+    const targetDataModel = forceDataModel || isOnboarding || activeTab === "schema";
+    const targetAgentMode = targetDataModel ? "data_understanding" : "scenario";
+    const setTargetMessages = targetDataModel ? setDataModelMessages : setScenarioMessages;
+
     setLoading(true);
-    const history = messages
+    const currentMessages = targetDataModel ? dataModelMessages : scenarioMessages;
+    const history = currentMessages
       .filter(m => m.role !== "system" && m.content !== "__ONBOARDING_START__")
       .map(m => ({ role: m.role, content: m.content }));
     // Don't display the synthetic onboarding trigger in the chat
     if (!isOnboarding) {
-      setMessages(p => [...p, { role: "user", content: msg }]);
+      setTargetMessages(p => [...p, { role: "user", content: msg }]);
     }
+    // Add empty assistant placeholder that text_delta will stream into
+    setTargetMessages(p => [...p, { role: "assistant", content: "", agent: targetAgentMode }]);
     const abortCtrl = new AbortController();
     abortRef.current = abortCtrl;
     const pendingRules = [];
@@ -2435,12 +2448,11 @@ function ChatPanel({ baseline, scenarios, setScenarios, setActiveTab, datasetId,
     let pendingScenarioName = null;
 
     try {
-      for await (const event of streamChat(msg, datasetId, history, abortCtrl.signal)) {
+      for await (const event of streamChat(msg, datasetId, history, abortCtrl.signal, targetAgentMode)) {
         if (event.type === "text_delta") {
-          if (event.agent) setCurrentAgent(event.agent);
-          setMessages(p => {
+          setTargetMessages(p => {
             const next = [...p];
-            next[next.length - 1] = { ...next[next.length - 1], content: next[next.length - 1].content + event.text, agent: event.agent || "scenario" };
+            next[next.length - 1] = { ...next[next.length - 1], content: next[next.length - 1].content + event.text, agent: targetAgentMode };
             return next;
           });
         } else if (event.type === "knowledge_saved") {
@@ -2516,7 +2528,7 @@ function ChatPanel({ baseline, scenarios, setScenarios, setActiveTab, datasetId,
             setActiveTab("scenarios");
           }
           // Ensure placeholder has content
-          setMessages(p => {
+          setTargetMessages(p => {
             const last = p[p.length - 1];
             if (!last.content) {
               const next = [...p];
@@ -2526,12 +2538,12 @@ function ChatPanel({ baseline, scenarios, setScenarios, setActiveTab, datasetId,
             return p;
           });
         } else if (event.type === "error") {
-          setMessages(p => { const next = [...p]; next[next.length - 1] = { ...next[next.length - 1], content: `Error: ${event.message}` }; return next; });
+          setTargetMessages(p => { const next = [...p]; next[next.length - 1] = { ...next[next.length - 1], content: `Error: ${event.message}` }; return next; });
         }
       }
     } catch (e) {
       if (e.name !== "AbortError") {
-        setMessages(p => { const next = [...p]; next[next.length - 1] = { ...next[next.length - 1], content: "Connection issue. Try again or build scenarios manually." }; return next; });
+        setTargetMessages(p => { const next = [...p]; next[next.length - 1] = { ...next[next.length - 1], content: "Connection issue. Try again or build scenarios manually." }; return next; });
       }
     }
     setLoading(false);
@@ -2544,8 +2556,11 @@ function ChatPanel({ baseline, scenarios, setScenarios, setActiveTab, datasetId,
     sendMessage(msg);
   }
 
-  const agentLabel = currentAgent === "data_understanding" ? "🔍 Data Agent" : "📊 Scenario Agent";
-  const agentColor = currentAgent === "data_understanding" ? C.purple : C.brand;
+  const agentLabel = isDataModelTab ? "🔍 Data Agent" : "📊 Scenario Agent";
+  const agentColor = isDataModelTab ? C.purple : C.brand;
+  const chatPlaceholder = isDataModelTab
+    ? "Ask about your data, define relationships, calculations…"
+    : "Ask about your data, create scenarios, analyze trends…";
 
   return (
     <div style={{ width: 340, borderLeft: `1px solid ${C.border}`, display: "flex", flexDirection: "column", background: C.white, flexShrink: 0 }}>
@@ -2582,7 +2597,7 @@ function ChatPanel({ baseline, scenarios, setScenarios, setActiveTab, datasetId,
         <div ref={endRef} />
       </div>
       <div style={{ padding: 12, borderTop: `1px solid ${C.border}`, display: "flex", gap: 6 }}>
-        <input style={{ ...S.input, flex: 1 }} value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === "Enter" && send()} placeholder="Ask about your data…" />
+        <input style={{ ...S.input, flex: 1 }} value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === "Enter" && send()} placeholder={chatPlaceholder} />
         <button style={S.btn("primary", true)} onClick={send} disabled={loading}>→</button>
       </div>
     </div>
@@ -3127,7 +3142,7 @@ export default function App() {
           {tab === "actuals" && <ActualsView baseline={baseline} schema={schema} />}
           {tab === "scenarios" && <ScenariosView baseline={baseline} scenarios={scenarios} setScenarios={handleSetScenarios} schema={schema} factDatasetId={factDataset?.dataset.id} relIds={relIds} />}
         </div>
-        <ChatPanel baseline={baseline} scenarios={scenarios} setScenarios={handleSetScenarios} setActiveTab={setTab} datasetId={factDataset?.dataset.id} onKnowledgeSaved={() => setKnowledgeRefreshKey(k => k + 1)} pendingOnboardingId={pendingOnboardingId} onOnboardingConsumed={() => setPendingOnboardingId(null)} />
+        <ChatPanel baseline={baseline} scenarios={scenarios} setScenarios={handleSetScenarios} setActiveTab={setTab} activeTab={tab} datasetId={factDataset?.dataset.id} onKnowledgeSaved={() => setKnowledgeRefreshKey(k => k + 1)} pendingOnboardingId={pendingOnboardingId} onOnboardingConsumed={() => setPendingOnboardingId(null)} />
       </div>
       <UploadModal
         isOpen={uploadOpen}

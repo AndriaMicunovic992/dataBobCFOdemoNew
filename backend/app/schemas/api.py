@@ -198,6 +198,7 @@ class ChatRequest(BaseModel):
     dataset_id: str
     message: str
     conversation_history: list[dict[str, str]] = []
+    agent_mode: str = "scenario"  # "data_understanding" | "scenario"
 
 
 class ChatResponse(BaseModel):
