@@ -2022,20 +2022,6 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
         </div>
       )}
 
-      {active.size > 0 && rowFs.length > 0 && valF && (
-        <div style={S.card}>
-          <div style={S.cardT}>Comparison Table</div>
-          <ComparisonTable baseline={comparisonBaselines[scenarios.find(sc => active.has(sc.id))?.name] || filtered} scenarioOutputs={scOutputs} rowFs={rowFs} colF={colF} valF={valF} scenarios={scenarios.filter(sc => active.has(sc.id))} />
-        </div>
-      )}
-
-      {active.size > 0 && rowFs.length > 0 && (
-        <div style={S.card}>
-          <div style={S.cardT}>Comparison Chart</div>
-          <PivotChartView data={comparisonBaselines[scenarios.find(sc => active.has(sc.id))?.name] || filtered} rowFs={rowFs} colF={colF} valF={valF} scenarioData={scOutputs} />
-        </div>
-      )}
-
       {variance.length > 0 && (
         <div style={S.card}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
@@ -2054,6 +2040,20 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
           ) : (
             <div style={{ textAlign: "center", padding: 24, color: C.textMuted, fontSize: 12 }}>Select a dimension above to break down changes.</div>
           )}
+        </div>
+      )}
+
+      {active.size > 0 && rowFs.length > 0 && valF && (
+        <div style={S.card}>
+          <div style={S.cardT}>Comparison Table</div>
+          <ComparisonTable baseline={comparisonBaselines[scenarios.find(sc => active.has(sc.id))?.name] || filtered} scenarioOutputs={scOutputs} rowFs={rowFs} colF={colF} valF={valF} scenarios={scenarios.filter(sc => active.has(sc.id))} />
+        </div>
+      )}
+
+      {active.size > 0 && rowFs.length > 0 && (
+        <div style={S.card}>
+          <div style={S.cardT}>Comparison Chart</div>
+          <PivotChartView data={comparisonBaselines[scenarios.find(sc => active.has(sc.id))?.name] || filtered} rowFs={rowFs} colF={colF} valF={valF} scenarioData={scOutputs} />
         </div>
       )}
 
