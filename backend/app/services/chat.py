@@ -208,65 +208,68 @@ TOOLS = [
     },
 ]
 
-# Tools for the Data Understanding Agent (a separate agent persona)
+# Tools for the Data Understanding Agent (separate persona from scenario agent)
 DATA_UNDERSTANDING_TOOLS = [
     {
         "name": "save_knowledge",
         "description": (
-            "Save a piece of structured knowledge about the dataset to the knowledge base. "
-            "Use this to capture relationships, calculations, business rules, or definitions "
-            "that you discover through conversation or data exploration. "
-            "Saved knowledge is shown in the Schema view and injected into future agent prompts."
+            "Save a piece of domain knowledge permanently. The user will see this "
+            "in the Knowledge panel and it will be used by all agents in future sessions."
         ),
         "input_schema": {
             "type": "object",
-            "required": ["entry_type", "plain_text"],
+            "required": ["entry_type", "content", "plain_text"],
             "properties": {
                 "entry_type": {
                     "type": "string",
-                    "enum": [
-                        "unmapped_relationship", "calculation", "data_transformation",
-                        "term_definition", "annotation", "interpretation_rule",
-                        "metric_definition", "dataset_mapping", "relationship_hint",
-                    ],
-                    "description": "Category of knowledge being saved",
-                },
-                "plain_text": {
-                    "type": "string",
-                    "description": "Human-readable summary of what was learned",
+                    "enum": ["relationship", "calculation", "transformation", "definition", "note"],
+                    "description": (
+                        "relationship — cross-table connection. "
+                        "calculation — derived metric/formula. "
+                        "transformation — data reshaping rule. "
+                        "definition — business term or field meaning. "
+                        "note — data quirk or exception."
+                    ),
                 },
                 "content": {
                     "type": "object",
-                    "description": "Structured details (e.g. formula, column names, conditions)",
+                    "description": (
+                        "Structured content. Shape depends on entry_type.\n\n"
+                        "relationship: {from_table, to_table, description, join_type, "
+                        "join_fields: [{from_field, to_field, match_type}], "
+                        "join_possible, workaround}\n\n"
+                        "calculation: {name, formula_display, result_type, result_unit, "
+                        "components: [{id, label, source_table, aggregation, value_column, "
+                        "sign, filters: [{column, operator, value}]}], executable: false}\n\n"
+                        "transformation: {name, source_table, description, input_grain, "
+                        "output_grain, operation, operation_config: {group_by, aggregations, "
+                        "filters}, executable: false}\n\n"
+                        "definition: {term, aliases, applies_to: {table, column, operator, "
+                        "value}, includes_sign_convention, sign_convention}\n\n"
+                        "note: {subject, category, description, affects: {tables, columns, "
+                        "values}, suggested_action}"
+                    ),
                 },
-                "confidence": {
+                "plain_text": {
                     "type": "string",
-                    "enum": ["high", "medium", "low"],
-                    "description": "How confident you are in this knowledge",
+                    "description": "One-line human-readable summary",
                 },
             },
         },
     },
     {
         "name": "list_knowledge",
-        "description": (
-            "Retrieve previously saved knowledge entries for this dataset. "
-            "Use this at the start of a data understanding session to see what is already known."
-        ),
+        "description": "List existing knowledge entries to check what's already known.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "entry_type": {
+                "entry_type_filter": {
                     "type": "string",
-                    "description": "Optional filter by entry type",
+                    "enum": ["relationship", "calculation", "transformation", "definition", "note"],
+                    "description": "Optional: filter by type",
                 },
             },
         },
-    },
-    {
-        "name": "list_scenarios",
-        "description": "List existing scenarios for this dataset.",
-        "input_schema": {"type": "object", "properties": {}},
     },
     {
         "name": "query_data",
@@ -312,6 +315,27 @@ DATA_UNDERSTANDING_TOOLS = [
         },
     },
 ]
+
+# Intent classifier prompt for routing to the right agent
+_INTENT_CLASSIFIER_PROMPT = """Classify the user's message as one of:
+- "data_understanding" — about data structure, table relationships, field meanings,
+  data quality, calculations, transformations, how the data works
+- "scenario" — creating/modifying scenarios, projections, analysis, pivot configuration
+- "general" — greeting, help request, general conversation
+
+Examples:
+"the invoice table connects to GL through the account field" → data_understanding
+"increase revenue by 10% for 2026" → scenario
+"what does hauptkonto mean?" → data_understanding
+"create a scenario with 5% cost reduction" → scenario
+"how is gross margin calculated?" → data_understanding
+"show me revenue by month" → scenario
+"the period column is YYYY-MM format" → data_understanding
+"hi, what can you do?" → general
+"exclude company 99 from reports" → data_understanding
+"EBITDA is operating profit plus depreciation" → data_understanding
+
+Respond with ONLY the classification word."""
 
 
 # ---------------------------------------------------------------------------
@@ -695,10 +719,11 @@ def _tool_save_knowledge(inp: dict, dataset_id: str) -> dict:
     import uuid as _uuid
     from sqlalchemy import text
 
-    entry_type = inp.get("entry_type", "annotation")
+    entry_type = inp.get("entry_type", "note")
     plain_text = inp.get("plain_text", "")
     content = inp.get("content") or {}
-    confidence = inp.get("confidence")
+    # Default to "suggested" so user can confirm in the Knowledge panel
+    confidence = inp.get("confidence", "suggested")
 
     if not plain_text:
         return {"error": "plain_text is required"}
@@ -710,7 +735,7 @@ def _tool_save_knowledge(inp: dict, dataset_id: str) -> dict:
                 text("""
                     INSERT INTO knowledge_entries
                       (id, dataset_id, entry_type, plain_text, content, confidence, source)
-                    VALUES (:id, :dataset_id, :entry_type, :plain_text, :content::jsonb, :confidence, 'ai_agent')
+                    VALUES (:id, :dataset_id, :entry_type, :plain_text, :content::jsonb, :confidence, 'chat_agent')
                 """),
                 {
                     "id": new_id,
@@ -729,46 +754,34 @@ def _tool_save_knowledge(inp: dict, dataset_id: str) -> dict:
 
 
 def _tool_list_knowledge(inp: dict, dataset_id: str) -> dict:
-    """Return knowledge entries for the dataset."""
+    """Return knowledge entries for the dataset (excludes rejected entries)."""
     from sqlalchemy import text
 
-    entry_type_filter = inp.get("entry_type")
+    entry_type_filter = inp.get("entry_type_filter") or inp.get("entry_type")
     try:
         with sync_engine.connect() as conn:
+            params: dict = {"ds_id": dataset_id}
+            where = "dataset_id = :ds_id AND (confidence IS NULL OR confidence != 'rejected')"
             if entry_type_filter:
-                rows = conn.execute(
-                    text("""
-                        SELECT id, entry_type, plain_text, content, confidence, source, created_at
-                        FROM knowledge_entries
-                        WHERE dataset_id = :ds_id AND entry_type = :entry_type
-                        ORDER BY created_at DESC
-                    """),
-                    {"ds_id": dataset_id, "entry_type": entry_type_filter},
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    text("""
-                        SELECT id, entry_type, plain_text, content, confidence, source, created_at
-                        FROM knowledge_entries
-                        WHERE dataset_id = :ds_id
-                        ORDER BY created_at DESC
-                    """),
-                    {"ds_id": dataset_id},
-                ).fetchall()
+                where += " AND entry_type = :etype"
+                params["etype"] = entry_type_filter
+            rows = conn.execute(
+                text(f"""
+                    SELECT id, entry_type, plain_text, confidence, source
+                    FROM knowledge_entries
+                    WHERE {where}
+                    ORDER BY entry_type, created_at DESC
+                """),
+                params,
+            ).fetchall()
 
-        entries = [
-            {
-                "id": r[0],
-                "entry_type": r[1],
-                "plain_text": r[2],
-                "content": r[3] if isinstance(r[3], dict) else {},
-                "confidence": r[4],
-                "source": r[5],
-                "created_at": str(r[6]),
-            }
-            for r in rows
-        ]
-        return {"entries": entries, "count": len(entries)}
+        return {
+            "entries": [
+                {"id": r[0], "type": r[1], "summary": r[2], "confidence": r[3], "source": r[4]}
+                for r in rows
+            ],
+            "count": len(rows),
+        }
     except Exception as exc:
         logger.warning("Failed to list knowledge entries: %s", exc)
         return {"error": str(exc)}
@@ -879,6 +892,10 @@ def _build_system_prompt_from_context(context: str) -> str:
         "Always use the provided tools to query actual data — never guess numbers.\n\n"
         f"{context}\n\n"
         "<instructions>\n"
+        "- KNOWLEDGE: Check <knowledge> in the data context. If the user asks for a\n"
+        "  metric with a <calculation> entry, use the defined formula and filters.\n"
+        "  If they ask about cross-table analysis and there's a <relationship>,\n"
+        "  explain the relationship and any limitations.\n"
         "- CRITICAL: When the user asks about cost categories, expense types, revenue, or any\n"
         "  business concept:\n"
         "  1. FIRST check <existing_groupings> — these are pre-existing columns from dimension\n"
@@ -944,47 +961,24 @@ def _build_system_prompt_from_context(context: str) -> str:
 
 
 async def _classify_intent(message: str, client: anthropic.AsyncAnthropic) -> str:
-    """Classify user message intent: 'scenario' or 'data_understanding'.
+    """Classify user message intent: 'scenario', 'data_understanding', or 'general'.
 
-    Uses a lightweight Claude call to route the conversation to the right agent.
     Falls back to 'scenario' if classification fails.
     """
     if message.strip() == "__ONBOARDING_START__":
         return "data_understanding"
 
-    # Fast heuristic — no API call needed for obvious scenario phrases
-    scenario_keywords = [
-        "what if", "increase", "decrease", "reduce", "add rule", "create scenario",
-        "scenario", "forecast", "project", "budget", "multiplier", "offset",
-        "rule", "copy scenario", "duplicate", "clone",
-    ]
-    lower = message.lower()
-    if any(kw in lower for kw in scenario_keywords):
-        return "scenario"
-
-    data_keywords = [
-        "explain", "what does", "how is", "how are", "what is", "define",
-        "understand", "describe", "relationship between", "how do",
-        "what columns", "data quality", "missing", "mismatch", "calculated",
-        "formula", "mapping", "glossary", "term", "field",
-    ]
-    if any(kw in lower for kw in data_keywords):
-        return "data_understanding"
-
     try:
         resp = await client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=10,
-            system=(
-                "Classify this message as either 'scenario' (user wants to model what-if scenarios, "
-                "forecasts, or budget changes) or 'data_understanding' (user wants to understand "
-                "data structure, definitions, relationships, or data quality). "
-                "Reply with ONLY the single word: scenario or data_understanding."
-            ),
+            max_tokens=20,
+            system=_INTENT_CLASSIFIER_PROMPT,
             messages=[{"role": "user", "content": message}],
         )
-        intent = resp.content[0].text.strip().lower()
-        return intent if intent in ("scenario", "data_understanding") else "scenario"
+        intent = resp.content[0].text.strip().lower().replace('"', "").split()[0]
+        if intent in ("data_understanding", "scenario", "general"):
+            return intent
+        return "scenario"
     except Exception:
         return "scenario"
 
@@ -992,52 +986,60 @@ async def _classify_intent(message: str, client: anthropic.AsyncAnthropic) -> st
 def _build_data_understanding_prompt(context: str) -> str:
     """System prompt for the Data Understanding Agent."""
     return (
-        "You are a Data Understanding Agent for DataBobIQ. Your role is to help users "
-        "understand their data: its structure, columns, relationships, calculations, and business logic.\n\n"
-        "You PROACTIVELY gather and save knowledge about the dataset. When you learn something "
-        "useful (a business rule, a relationship between tables, a formula, a term definition), "
-        "you IMMEDIATELY save it using the save_knowledge tool — without waiting to be asked.\n\n"
+        "You are the Data Understanding Agent for dataBobIQ, a financial analytics platform.\n"
+        "Your role is to help the user document and clarify their data structure.\n\n"
         f"{context}\n\n"
-        "<instructions>\n"
-        "- When the user asks about data structure or business concepts, explore with query_data "
-        "  and list_dimension_values, then save what you learn with save_knowledge.\n"
-        "- KNOWLEDGE TYPES to save:\n"
-        "  * unmapped_relationship: a relationship between tables or columns not yet in the schema\n"
-        "  * calculation: how a metric or KPI is derived from raw columns\n"
-        "  * data_transformation: how raw data needs to be cleaned or reshaped\n"
-        "  * term_definition: what a business term means in this data context\n"
-        "  * annotation: an important note about a column, table, or data quality issue\n"
-        "  * interpretation_rule: how to interpret specific values (e.g. negative = cost)\n"
-        "  * metric_definition: how a business metric is calculated\n"
-        "  * dataset_mapping: how two datasets relate to each other at the business level\n"
-        "  * relationship_hint: a possible but unverified relationship to investigate\n"
-        "- Start sessions by calling list_knowledge to see what is already known, then build on it.\n"
-        "- Be concise in conversation but thorough in what you save to knowledge.\n"
-        "- When the user describes a business rule or calculation, capture it precisely in content.\n"
-        "- If you discover data quality issues (nulls, mismatches, inconsistencies), save them.\n"
-        "- Format numbers clearly. If data appears German, respond in German.\n"
-        "</instructions>"
+        "<tools>\n"
+        "- save_knowledge: Save a knowledge entry permanently (relationship, calculation,\n"
+        "  transformation, definition, or note)\n"
+        "- list_knowledge: Check what's already been saved\n"
+        "</tools>\n"
+        "<behavior>\n"
+        "SAVING KNOWLEDGE:\n"
+        "When the user explains something about their data, save it using save_knowledge\n"
+        "with the correct type and a well-structured content object.\n"
+        "For calculations and transformations, make the content PRECISE and COMPLETE:\n"
+        "- Always include specific column names, table names, filter values\n"
+        "- Use the standard operator set: eq, neq, gt, lt, gte, lte, in, not_in, contains, between\n"
+        "- Define every component of a formula separately with its filters and aggregation\n"
+        "- Set 'executable': false (Level 2 is not yet active)\n"
+        "After saving, confirm briefly: 'Saved — this is now in your Knowledge panel.'\n\n"
+        "ASKING FOLLOW-UPS:\n"
+        "When an explanation is incomplete, ask 1-2 focused follow-up questions:\n"
+        "- 'Which column identifies COGS? Is it reporting_h2 = Warenaufwand?'\n"
+        "- 'Is that a direct join on customer_id, or is there a mapping table?'\n"
+        "Keep it conversational, not interrogative.\n\n"
+        "CONFIRMING COMPLEX ENTRIES:\n"
+        "For multi-component calculations or non-obvious relationships, summarize your\n"
+        "understanding before saving.\n\n"
+        "QUALITY STANDARD:\n"
+        "- Bad: 'Invoices and GL are related' (too vague)\n"
+        "- Good: 'Invoice lines create GL postings in accounts 500000-599999. No direct FK.\n"
+        "  Both tables share customer_id (invoice) ↔ debitor_id (GL) and the same period format.'\n"
+        "</behavior>"
     )
 
 
 def _build_onboarding_prompt(context: str) -> str:
-    """System prompt for the onboarding flow triggered after a new dataset is analyzed."""
+    """System prompt for the onboarding flow — proactive exploration of a new dataset."""
     return (
-        "You are the Data Understanding Agent for DataBobIQ. A new dataset was just uploaded "
-        "and analyzed. Your task is to proactively explore it and build a knowledge base.\n\n"
+        "You are the Data Understanding Agent for dataBobIQ.\n"
+        "The user just uploaded data. Analyze what the system discovered and ask about what's MISSING.\n\n"
         f"{context}\n\n"
-        "<onboarding_instructions>\n"
-        "Do the following in order WITHOUT waiting for user input:\n"
-        "1. Call list_knowledge to see if any knowledge already exists.\n"
-        "2. Call list_dimension_values on each key dimension column to understand what values exist.\n"
-        "3. Call query_data to see the top-level breakdown (e.g. total by main category).\n"
-        "4. Save at least 3 knowledge entries covering:\n"
-        "   - What this dataset represents (annotation or term_definition)\n"
-        "   - Key columns and their business meaning (term_definition per column)\n"
-        "   - Any relationships or patterns you notice (relationship_hint or calculation)\n"
-        "5. Summarize what you learned in 2-3 sentences for the user.\n"
-        "Be thorough but efficient — explore the data systematically.\n"
-        "</onboarding_instructions>"
+        "<behavior>\n"
+        "1. Brief intro: 'I've looked through your data. Here's what I see, and a few things I'd like\n"
+        "   to understand better.'\n"
+        "2. Summarize key findings: tables, row counts, key columns, detected relationships.\n"
+        "3. Ask 3-5 SPECIFIC questions. Priorities:\n"
+        "   - Multiple tables with no relationships → how do they connect?\n"
+        "   - Financial data → key calculations needed? (margins, EBITDA, etc.)\n"
+        "   - Codes/IDs with no labels → what do they mean?\n"
+        "   - Time columns → reporting grain, any transformation needs?\n"
+        "4. Offer your best guess and let the user confirm:\n"
+        "   'It looks like hauptkonto groups into reporting_h2. Is that the hierarchy you use?'\n"
+        "5. Number your questions so the user can reply to specific ones.\n"
+        "6. After the user responds, save each answer using save_knowledge.\n"
+        "</behavior>"
     )
 
 
@@ -1120,13 +1122,24 @@ async def stream_chat(
     messages: list[dict] = []
     for msg in history:
         role = msg.get("role", "user")
-        content = msg.get("content", "")
-        if role in ("user", "assistant") and content:
-            messages.append({"role": role, "content": content})
+        content_val = msg.get("content", "")
+        if role in ("user", "assistant") and content_val:
+            messages.append({"role": role, "content": content_val})
 
-    # Onboarding: send a directive user message; hide the __ONBOARDING_START__ trigger
+    # Onboarding: synthesize the effective user turn; hide the __ONBOARDING_START__ trigger
     if is_onboarding:
-        messages.append({"role": "user", "content": "Please explore this dataset and save what you learn."})
+        messages.append({
+            "role": "user",
+            "content": (
+                "The user just uploaded their data. Analyze the data context and "
+                "introduce yourself briefly. Then ask 3-5 specific questions about "
+                "things you couldn't determine automatically. Focus on: "
+                "1) Relationships between tables, "
+                "2) Key calculations or derived metrics needed, "
+                "3) Any data transformations or business rules. "
+                "Keep it conversational. Number your questions."
+            ),
+        })
     else:
         messages.append({"role": "user", "content": message})
 

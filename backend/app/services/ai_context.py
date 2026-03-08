@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import sync_engine
-from app.models.metadata import Dataset, DatasetRelationship, SemanticColumn
+from app.models.metadata import Dataset, DatasetRelationship, KnowledgeEntry, SemanticColumn
 from app.services import storage as storage_svc
 
 logger = logging.getLogger(__name__)
@@ -80,6 +80,15 @@ async def build_agent_context(
         )
     )
     all_rels = rel_result.scalars().all()
+
+    # Load knowledge entries for these datasets (exclude rejected)
+    ke_result = await db.execute(
+        select(KnowledgeEntry).where(
+            KnowledgeEntry.dataset_id.in_(dataset_ids),
+            KnowledgeEntry.confidence != "rejected",
+        ).order_by(KnowledgeEntry.entry_type, KnowledgeEntry.created_at)
+    )
+    all_knowledge: list[KnowledgeEntry] = ke_result.scalars().all()
 
     parts: list[str] = ["<data_context>"]
 
@@ -240,6 +249,70 @@ async def build_agent_context(
 
         parts.append("  </dataset>")
 
+    # Knowledge entries block — rendered at top level of data_context
+    # Also collects definition entries to inject into the glossary
+    glossary_from_knowledge: list[tuple[str, str]] = []
+    if all_knowledge:
+        parts.append("  <knowledge>")
+        by_type: dict[str, list] = {}
+        for ke in all_knowledge:
+            by_type.setdefault(ke.entry_type, []).append(ke)
+
+        for ke in by_type.get("relationship", []):
+            c = ke.content or {}
+            parts.append(
+                f'    <relationship from="{_esc(c.get("from_table", ""))}" '
+                f'to="{_esc(c.get("to_table", ""))}" '
+                f'joinable="{str(c.get("join_possible", False)).lower()}">'
+                f'{_esc(ke.plain_text)}</relationship>'
+            )
+
+        for ke in by_type.get("calculation", []):
+            c = ke.content or {}
+            parts.append(
+                f'    <calculation name="{_esc(c.get("name", ""))}" '
+                f'formula="{_esc(c.get("formula_display", ""))}">'
+                f'{_esc(ke.plain_text)}</calculation>'
+            )
+
+        for ke in by_type.get("transformation", []):
+            c = ke.content or {}
+            parts.append(
+                f'    <transformation name="{_esc(c.get("name", ""))}" '
+                f'table="{_esc(c.get("source_table", ""))}">'
+                f'{_esc(ke.plain_text)}</transformation>'
+            )
+
+        for ke in by_type.get("definition", []):
+            c = ke.content or {}
+            aliases = ", ".join(c.get("aliases", []))
+            apply = c.get("applies_to", {})
+            parts.append(
+                f'    <definition term="{_esc(c.get("term", ""))}" '
+                f'aliases="{_esc(aliases)}" '
+                f'column="{_esc(apply.get("column", ""))}" '
+                f'value="{_esc(str(apply.get("value", "")))}">'
+                f'{_esc(ke.plain_text)}</definition>'
+            )
+            # Inject into glossary for backward compat with scenario agent prompt
+            term = c.get("term", "")
+            col = apply.get("column", "")
+            val = apply.get("value", "")
+            if term and col and val:
+                glossary_from_knowledge.append((term.lower(), f'{col} = "{val}"'))
+                for alias in c.get("aliases", []):
+                    if alias:
+                        glossary_from_knowledge.append((alias.lower(), f'{col} = "{val}"'))
+
+        for ke in by_type.get("note", []):
+            c = ke.content or {}
+            parts.append(
+                f'    <note subject="{_esc(c.get("subject", ""))}">'
+                f'{_esc(ke.plain_text)}</note>'
+            )
+
+        parts.append("  </knowledge>")
+
     # Build glossary from three structured sources:
     # 1. existing_groupings[].business_terms → maps to column + value
     # 2. semantic_value_labels categories → maps to column + category filter
@@ -283,8 +356,10 @@ async def build_agent_context(
             for syn in (sem_col.synonyms or []):
                 glossary_entries.append((syn.lower(), f'column: {col_name}'))
 
+    # Prepend knowledge-derived definitions so they take priority in the glossary
+    glossary_entries = glossary_from_knowledge + glossary_entries
+
     if glossary_entries:
-        parts.append("  <glossary>")
         seen: set[str] = set()
         for phrase, mapping in glossary_entries[:30]:
             if phrase in seen:
