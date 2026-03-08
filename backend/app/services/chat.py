@@ -731,14 +731,22 @@ def _tool_save_knowledge(inp: dict, dataset_id: str) -> dict:
     try:
         new_id = _uuid.uuid4().hex
         with sync_engine.begin() as conn:
+            # Look up model_id from the dataset
+            ds_row = conn.execute(
+                text("SELECT model_id FROM datasets WHERE id = :ds_id"),
+                {"ds_id": dataset_id},
+            ).fetchone()
+            model_id = ds_row[0] if ds_row else None
+
             conn.execute(
                 text("""
                     INSERT INTO knowledge_entries
-                      (id, dataset_id, entry_type, plain_text, content, confidence, source)
-                    VALUES (:id, :dataset_id, :entry_type, :plain_text, :content, :confidence, 'chat_agent')
+                      (id, model_id, dataset_id, entry_type, plain_text, content, confidence, source)
+                    VALUES (:id, :model_id, :dataset_id, :entry_type, :plain_text, :content, :confidence, 'chat_agent')
                 """),
                 {
                     "id": new_id,
+                    "model_id": model_id,
                     "dataset_id": dataset_id,
                     "entry_type": entry_type,
                     "plain_text": plain_text,

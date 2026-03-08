@@ -24,12 +24,31 @@ const json = (body) => ({
   body: JSON.stringify(body),
 })
 
+// ── Models ───────────────────────────────────────────────────────────────────
+
+export async function listModels() {
+  return req('/models')
+}
+
+export async function createModel(body) {
+  return req('/models', { method: 'POST', ...json(body) })
+}
+
+export async function updateModel(id, body) {
+  return req(`/models/${id}`, { method: 'PATCH', ...json(body) })
+}
+
+export async function deleteModel(id) {
+  return req(`/models/${id}`, { method: 'DELETE' })
+}
+
 // ── Upload ──────────────────────────────────────────────────────────────────
 
 /** Upload an xlsx/xls/csv/tsv file.  Returns list[DatasetResponse]. */
-export async function uploadFile(file) {
+export async function uploadFile(file, modelId = null) {
   const fd = new FormData()
   fd.append('file', file)
+  if (modelId) fd.append('model_id', modelId)
   return req('/upload', { method: 'POST', body: fd })
 }
 

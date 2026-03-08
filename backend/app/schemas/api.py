@@ -9,6 +9,45 @@ from pydantic import BaseModel, Field
 
 
 # ---------------------------------------------------------------------------
+# Model (top-level workspace container)
+# ---------------------------------------------------------------------------
+
+class ModelCreate(BaseModel):
+    name: str
+    description: str | None = None
+
+
+class ModelUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    status: str | None = None  # active | archived
+
+
+class ModelSummary(BaseModel):
+    id: str
+    name: str
+    description: str | None = None
+    status: str
+    dataset_count: int = 0
+    scenario_count: int = 0
+    created_at: datetime
+    updated_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class ModelResponse(BaseModel):
+    id: str
+    name: str
+    description: str | None = None
+    status: str
+    created_at: datetime
+    updated_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
+# ---------------------------------------------------------------------------
 # Dataset column
 # ---------------------------------------------------------------------------
 
@@ -37,6 +76,7 @@ class DatasetColumnUpdate(BaseModel):
 
 class DatasetResponse(BaseModel):
     id: str
+    model_id: str | None = None
     name: str
     table_name: str
     source_filename: str | None = None
@@ -171,6 +211,7 @@ class ScenarioUpdate(BaseModel):
 
 class ScenarioResponse(BaseModel):
     id: str
+    model_id: str | None = None
     name: str
     dataset_id: str
     rules: list[dict[str, Any]]

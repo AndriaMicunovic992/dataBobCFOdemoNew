@@ -11,6 +11,7 @@ import {
   streamChat,
   getScenarios, createScenario, updateScenario, deleteScenario, computeScenario,
   getKnowledge, createKnowledge, updateKnowledge, deleteKnowledge,
+  listModels, createModel, updateModel, deleteModel,
 } from "./api.js";
 
 // ─── THEME ──────────────────────────────────────────────────────
@@ -2678,7 +2679,7 @@ function apiBaselineToRows(bl) {
 }
 
 // ─── UPLOAD MODAL ────────────────────────────────────────────────
-function UploadModal({ isOpen, onClose, onUploaded, schemaList }) {
+function UploadModal({ isOpen, onClose, onUploaded, schemaList, modelId = null }) {
   const [queue, setQueue] = useState([]); // [{id, file, status, error, datasetIds}]
   const [dragging, setDragging] = useState(false);
   const [deletingId, setDeletingId] = useState(null); // dataset id pending confirm
@@ -2694,7 +2695,7 @@ function UploadModal({ isOpen, onClose, onUploaded, schemaList }) {
       uploadingRef.current = true;
       setQueue(p => p.map(q => q.id === next.id ? { ...q, status: "uploading" } : q));
       try {
-        const result = await uploadFile(next.file);
+        const result = await uploadFile(next.file, modelId);
         const ids = (result ?? []).map(ds => ds.id);
         setQueue(p => p.map(q => q.id === next.id ? { ...q, status: "done", datasetIds: ids } : q));
         onUploaded();
@@ -2907,6 +2908,127 @@ function UploadScreen({ onUploaded }) {
   );
 }
 
+// ─── MODEL LIST PAGE ─────────────────────────────────────────────
+function ModelListPage({ onSelect }) {
+  const queryClient = useQueryClient();
+  const { data: models = [], isLoading } = useQuery({
+    queryKey: ["models"],
+    queryFn: listModels,
+    staleTime: 10_000,
+  });
+  const [newName, setNewName] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [renamingId, setRenamingId] = useState(null);
+  const [renameVal, setRenameVal] = useState("");
+  const [archivingId, setArchivingId] = useState(null);
+
+  async function handleCreate(e) {
+    e.preventDefault();
+    if (!newName.trim()) return;
+    setCreating(true);
+    try {
+      const m = await createModel({ name: newName.trim() });
+      queryClient.invalidateQueries({ queryKey: ["models"] });
+      setNewName("");
+      onSelect(m.id, m.name);
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  async function handleRename(id) {
+    if (!renameVal.trim()) { setRenamingId(null); return; }
+    try {
+      await updateModel(id, { name: renameVal.trim() });
+      queryClient.invalidateQueries({ queryKey: ["models"] });
+    } catch (err) { alert(err.message); }
+    setRenamingId(null);
+  }
+
+  async function handleArchive(id) {
+    try {
+      await updateModel(id, { status: "archived" });
+      queryClient.invalidateQueries({ queryKey: ["models"] });
+    } catch (err) { alert(err.message); }
+    setArchivingId(null);
+  }
+
+  if (isLoading) return <LoadingScreen />;
+
+  return (
+    <div style={{ height: "100vh", display: "flex", flexDirection: "column", background: C.bg, fontFamily: "'Plus Jakarta Sans', sans-serif" }}>
+      <link href={FONT_URL} rel="stylesheet" />
+      <div style={{ padding: "0 32px", height: 56, borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", background: C.white }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ width: 28, height: 28, borderRadius: 8, background: `linear-gradient(135deg, ${C.brand}, ${C.brandDark})`, display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <span style={{ color: "#fff", fontSize: 13, fontWeight: 800 }}>d</span>
+          </div>
+          <span style={{ fontSize: 17, fontWeight: 800, color: C.text, letterSpacing: "-0.3px" }}>
+            data<span style={{ color: C.brand }}>Bob</span>IQ
+          </span>
+        </div>
+      </div>
+
+      <div style={{ flex: 1, overflow: "auto", padding: "40px 32px", maxWidth: 800, margin: "0 auto", width: "100%" }}>
+        <h2 style={{ fontSize: 22, fontWeight: 800, color: C.text, marginBottom: 6 }}>Your Models</h2>
+        <p style={{ color: C.textMuted, fontSize: 13, marginBottom: 24 }}>Each model is a workspace with its own datasets and scenarios.</p>
+
+        <div style={{ display: "grid", gap: 12, marginBottom: 32 }}>
+          {models.map(m => (
+            <div key={m.id} style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: "16px 20px", display: "flex", alignItems: "center", gap: 12, boxShadow: "0 1px 3px rgba(0,0,0,0.04)" }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                {renamingId === m.id ? (
+                  <input
+                    autoFocus
+                    style={{ ...S.input, fontSize: 15, fontWeight: 700, padding: "4px 8px", width: "auto", minWidth: 200 }}
+                    value={renameVal}
+                    onChange={e => setRenameVal(e.target.value)}
+                    onBlur={() => handleRename(m.id)}
+                    onKeyDown={e => { if (e.key === "Enter") handleRename(m.id); if (e.key === "Escape") setRenamingId(null); }}
+                  />
+                ) : (
+                  <div style={{ fontSize: 15, fontWeight: 700, color: C.text, cursor: "pointer" }} onDoubleClick={() => { setRenamingId(m.id); setRenameVal(m.name); }}>{m.name}</div>
+                )}
+                {m.description && <div style={{ fontSize: 12, color: C.textMuted, marginTop: 2 }}>{m.description}</div>}
+                <div style={{ fontSize: 11, color: C.textMuted, marginTop: 4 }}>{m.dataset_count} dataset{m.dataset_count !== 1 ? "s" : ""}</div>
+              </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <button onClick={() => onSelect(m.id, m.name)} style={{ ...S.btn("primary", true) }}>Open</button>
+                <button onClick={() => { setRenamingId(m.id); setRenameVal(m.name); }} style={{ ...S.btn("ghost", true) }}>Rename</button>
+                {archivingId === m.id ? (
+                  <>
+                    <button onClick={() => handleArchive(m.id)} style={{ ...S.btn("danger", true) }}>Confirm</button>
+                    <button onClick={() => setArchivingId(null)} style={{ ...S.btn("ghost", true) }}>Cancel</button>
+                  </>
+                ) : (
+                  <button onClick={() => setArchivingId(m.id)} style={{ ...S.btn("ghost", true), color: C.textMuted }}>Archive</button>
+                )}
+              </div>
+            </div>
+          ))}
+          {models.length === 0 && (
+            <div style={{ color: C.textMuted, fontSize: 13, textAlign: "center", padding: "32px 0" }}>No models yet. Create your first one below.</div>
+          )}
+        </div>
+
+        <form onSubmit={handleCreate} style={{ display: "flex", gap: 8 }}>
+          <input
+            style={{ ...S.input, flex: 1 }}
+            placeholder="New model name…"
+            value={newName}
+            onChange={e => setNewName(e.target.value)}
+          />
+          <button type="submit" style={{ ...S.btn("primary"), flexShrink: 0 }} disabled={creating || !newName.trim()}>
+            {creating ? "Creating…" : "Create Model"}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 // ─── LOADING SCREEN ──────────────────────────────────────────────
 function LoadingScreen() {
   return (
@@ -2926,12 +3048,30 @@ export default function App() {
   const [scenarios, setScenarios] = useState([]);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [knowledgeRefreshKey, setKnowledgeRefreshKey] = useState(0);
+  const [currentModelId, setCurrentModelId] = useState(null);
+  const [currentModelName, setCurrentModelName] = useState("");
+
+  // ── Load models to auto-select ──────────────────────────────────
+  const { data: models = [], isLoading: modelsLoading } = useQuery({
+    queryKey: ["models"],
+    queryFn: listModels,
+    staleTime: 60_000,
+  });
+
+  // Auto-select if there's exactly one model (existing users)
+  useEffect(() => {
+    if (!currentModelId && models.length === 1) {
+      setCurrentModelId(models[0].id);
+      setCurrentModelName(models[0].name);
+    }
+  }, [models, currentModelId]);
 
   // ── Load datasets from API ──────────────────────────────────────
   const { data: schemaList = [], isLoading } = useQuery({
-    queryKey: ["datasets"],
+    queryKey: ["datasets", currentModelId],
     queryFn: getDatasets,
     staleTime: 30_000,
+    enabled: !!currentModelId,
     refetchInterval: (query) => {
       const list = query.state.data ?? [];
       const now = Date.now();
@@ -3088,8 +3228,13 @@ export default function App() {
     });
   }
 
+  if (modelsLoading) return <LoadingScreen />;
+  if (!currentModelId && models.length !== 1) {
+    return <ModelListPage onSelect={(id, name) => { setCurrentModelId(id); setCurrentModelName(name); }} />;
+  }
+
   if (isLoading) return <LoadingScreen />;
-  if (!schemaList.length) return <UploadScreen onUploaded={() => queryClient.invalidateQueries({ queryKey: ["datasets"] })} />;
+  if (!schemaList.length) return <UploadScreen onUploaded={() => queryClient.invalidateQueries({ queryKey: ["datasets", currentModelId] })} />;
 
   const datasetLabel = factDataset ? `${factDataset.dataset.name} · ${schemaList.length} dataset${schemaList.length !== 1 ? "s" : ""}` : "";
 
@@ -3114,6 +3259,11 @@ export default function App() {
           <span style={{ fontSize: 17, fontWeight: 800, color: C.text, letterSpacing: "-0.3px" }}>
             data<span style={{ color: C.brand }}>Bob</span>IQ
           </span>
+          {models.length > 1 && (
+            <button onClick={() => setCurrentModelId(null)} style={{ ...S.btn("ghost", true), marginLeft: 8, fontSize: 11, color: C.textMuted }}>
+              ← {currentModelName}
+            </button>
+          )}
         </div>
 
         <div style={{ display: "flex", gap: 2, background: C.bg, borderRadius: 10, padding: 3 }}>
@@ -3147,8 +3297,9 @@ export default function App() {
       <UploadModal
         isOpen={uploadOpen}
         onClose={() => setUploadOpen(false)}
-        onUploaded={() => queryClient.invalidateQueries({ queryKey: ["datasets"] })}
+        onUploaded={() => queryClient.invalidateQueries({ queryKey: ["datasets", currentModelId] })}
         schemaList={schemaList}
+        modelId={currentModelId}
       />
     </div>
   );

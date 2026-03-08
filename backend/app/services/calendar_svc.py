@@ -73,6 +73,7 @@ async def ensure_calendar() -> None:
 
             ds = Dataset(
                 id=uuid.uuid4().hex,
+                model_id="00000000000000000000000000000001",
                 name=_CAL_NAME,
                 table_name=_CAL_TABLE,
                 source_filename=None,
