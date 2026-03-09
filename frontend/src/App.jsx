@@ -3314,13 +3314,15 @@ export default function App() {
     staleTime: 60_000,
   });
 
-  // Auto-select if there's exactly one model (existing users)
+  // Auto-select if there's exactly one model on initial load only
+  const hasAutoSelected = useRef(false);
   useEffect(() => {
-    if (!currentModelId && models.length === 1) {
+    if (!hasAutoSelected.current && !currentModelId && models.length === 1) {
+      hasAutoSelected.current = true;
       setCurrentModelId(models[0].id);
       setCurrentModelName(models[0].name);
     }
-  }, [models, currentModelId]);
+  }, [models]);
 
   // ── Load datasets from API ──────────────────────────────────────
   const { data: schemaList = [], isLoading } = useQuery({
