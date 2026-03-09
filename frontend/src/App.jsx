@@ -2891,6 +2891,241 @@ function UploadScreen({ onUploaded }) {
   );
 }
 
+// ─── ARCHITECTURE FLOW DIAGRAM ────────────────────────────────────
+function ArchitectureFlowDiagram() {
+  const W = 880, H = 620;
+  const AC = {
+    brand: "#6abbd9", brandLight: "#e8f6fb", brandDark: "#3a8faa",
+    purple: "#7c5cbf", purpleLight: "#f0ebfa",
+    green: "#34a853", greenLight: "#e8f5ec",
+    amber: "#e8a735", amberLight: "#fef7e6",
+    text: "#1a1a2e", textMuted: "#6b7280",
+    white: "#ffffff", border: "#e0e3e8", arrow: "#b0b8c4",
+  };
+  const Box = ({ x, y, w, h, fill, stroke, rx = 10, children, dashed = false }) => (
+    <g>
+      <rect x={x} y={y} width={w} height={h} rx={rx}
+        fill={fill} stroke={stroke} strokeWidth={1.5}
+        strokeDasharray={dashed ? "6 3" : "none"} />
+      {children}
+    </g>
+  );
+  const Arrow = ({ x1, y1, x2, y2, label }) => {
+    const midX = (x1 + x2) / 2, midY = (y1 + y2) / 2;
+    const angle = Math.atan2(y2 - y1, x2 - x1), hl = 8;
+    return (
+      <g>
+        <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={AC.arrow} strokeWidth={1.5} />
+        <polygon
+          points={`${x2},${y2} ${x2 - hl * Math.cos(angle - 0.4)},${y2 - hl * Math.sin(angle - 0.4)} ${x2 - hl * Math.cos(angle + 0.4)},${y2 - hl * Math.sin(angle + 0.4)}`}
+          fill={AC.arrow} />
+        {label && <text x={midX} y={midY - 6} textAnchor="middle" fontSize={9} fill={AC.textMuted} fontFamily="'Plus Jakarta Sans', sans-serif">{label}</text>}
+      </g>
+    );
+  };
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto" }} fontFamily="'Plus Jakarta Sans', -apple-system, sans-serif">
+      {/* Browser layer */}
+      <Box x={20} y={10} w={840} h={180} fill={AC.brandLight} stroke={AC.brand} dashed>
+        <text x={40} y={34} fontSize={11} fontWeight={700} fill={AC.brandDark}>BROWSER (React + Vite)</text>
+      </Box>
+      <Box x={50} y={50} w={160} h={120} fill={AC.white} stroke={AC.border}>
+        <text x={130} y={74} textAnchor="middle" fontSize={11} fontWeight={700} fill={AC.text}>📐 Data Model Tab</text>
+        <text x={130} y={92} textAnchor="middle" fontSize={9} fill={AC.textMuted}>Schema editor</text>
+        <text x={130} y={105} textAnchor="middle" fontSize={9} fill={AC.textMuted}>Relationships</text>
+        <text x={130} y={118} textAnchor="middle" fontSize={9} fill={AC.textMuted}>Knowledge panel</text>
+        <text x={130} y={138} textAnchor="middle" fontSize={9} fontWeight={600} fill="#6366f1">🔍 Data Agent chat</text>
+      </Box>
+      <Box x={240} y={50} w={160} h={120} fill={AC.white} stroke={AC.border}>
+        <text x={320} y={74} textAnchor="middle" fontSize={11} fontWeight={700} fill={AC.text}>📊 Actuals Tab</text>
+        <text x={320} y={92} textAnchor="middle" fontSize={9} fill={AC.textMuted}>Pivot table engine</text>
+        <text x={320} y={105} textAnchor="middle" fontSize={9} fill={AC.textMuted}>Charts (Recharts)</text>
+        <text x={320} y={118} textAnchor="middle" fontSize={9} fill={AC.textMuted}>Saved views</text>
+        <text x={320} y={138} textAnchor="middle" fontSize={9} fontWeight={600} fill="#2563eb">📊 Scenario Agent chat</text>
+      </Box>
+      <Box x={430} y={50} w={180} h={120} fill={AC.white} stroke={AC.border}>
+        <text x={520} y={74} textAnchor="middle" fontSize={11} fontWeight={700} fill={AC.text}>🔮 Scenarios Tab</text>
+        <text x={520} y={92} textAnchor="middle" fontSize={9} fill={AC.textMuted}>Rule builder (multiplier/offset)</text>
+        <text x={520} y={105} textAnchor="middle" fontSize={9} fill={AC.textMuted}>Projection engine</text>
+        <text x={520} y={118} textAnchor="middle" fontSize={9} fill={AC.textMuted}>Comparison table + waterfall</text>
+        <text x={520} y={138} textAnchor="middle" fontSize={9} fontWeight={600} fill="#2563eb">📊 Scenario Agent chat</text>
+      </Box>
+      <Box x={650} y={55} w={180} h={110} fill={AC.amberLight} stroke={AC.amber} rx={8}>
+        <text x={740} y={78} textAnchor="middle" fontSize={10} fontWeight={700} fill={AC.amber}>⚡ Client-Side Compute</text>
+        <text x={740} y={96} textAnchor="middle" fontSize={9} fill={AC.textMuted}>Pivot aggregation</text>
+        <text x={740} y={109} textAnchor="middle" fontSize={9} fill={AC.textMuted}>Scenario projection</text>
+        <text x={740} y={122} textAnchor="middle" fontSize={9} fill={AC.textMuted}>Comparison + waterfall</text>
+        <text x={740} y={138} textAnchor="middle" fontSize={8} fill={AC.amber}>(future: server-side for scale)</text>
+      </Box>
+      {/* Browser → Backend */}
+      <Arrow x1={130} y1={170} x2={130} y2={230} label="REST + SSE" />
+      <Arrow x1={320} y1={170} x2={320} y2={230} label="REST" />
+      <Arrow x1={520} y1={170} x2={520} y2={230} label="REST" />
+      {/* Backend layer */}
+      <Box x={20} y={230} w={840} h={170} fill={AC.purpleLight} stroke={AC.purple} dashed>
+        <text x={40} y={254} fontSize={11} fontWeight={700} fill={AC.purple}>BACKEND (FastAPI + Python)</text>
+      </Box>
+      <Box x={50} y={270} w={160} h={110} fill={AC.white} stroke={AC.border}>
+        <text x={130} y={294} textAnchor="middle" fontSize={11} fontWeight={700} fill={AC.text}>🛣️ API Routes</text>
+        <text x={130} y={312} textAnchor="middle" fontSize={9} fill={AC.textMuted}>/models/{"{id}"}/datasets</text>
+        <text x={130} y={325} textAnchor="middle" fontSize={9} fill={AC.textMuted}>/models/{"{id}"}/scenarios</text>
+        <text x={130} y={338} textAnchor="middle" fontSize={9} fill={AC.textMuted}>/models/{"{id}"}/knowledge</text>
+        <text x={130} y={351} textAnchor="middle" fontSize={9} fill={AC.textMuted}>/models/{"{id}"}/chat</text>
+      </Box>
+      <Box x={240} y={270} w={200} h={110} fill={AC.white} stroke={AC.border}>
+        <text x={340} y={294} textAnchor="middle" fontSize={11} fontWeight={700} fill={AC.text}>🤖 Chat Engine</text>
+        <text x={340} y={314} textAnchor="middle" fontSize={9} fill={AC.textMuted}>Tab-based agent routing</text>
+        <text x={340} y={330} textAnchor="middle" fontSize={9} fill="#6366f1" fontWeight={600}>Data Agent → save_knowledge</text>
+        <text x={340} y={346} textAnchor="middle" fontSize={9} fill="#2563eb" fontWeight={600}>Scenario Agent → create_scenario</text>
+        <text x={340} y={362} textAnchor="middle" fontSize={9} fill={AC.textMuted}>SSE streaming responses</text>
+      </Box>
+      <Box x={470} y={270} w={170} h={110} fill={AC.white} stroke={AC.border}>
+        <text x={555} y={294} textAnchor="middle" fontSize={11} fontWeight={700} fill={AC.text}>🧠 AI Context</text>
+        <text x={555} y={314} textAnchor="middle" fontSize={9} fill={AC.textMuted}>Builds XML context from:</text>
+        <text x={555} y={328} textAnchor="middle" fontSize={9} fill={AC.textMuted}>• Schema + columns</text>
+        <text x={555} y={342} textAnchor="middle" fontSize={9} fill={AC.textMuted}>• Knowledge entries</text>
+        <text x={555} y={356} textAnchor="middle" fontSize={9} fill={AC.textMuted}>• Glossary + relationships</text>
+      </Box>
+      <Box x={670} y={270} w={160} h={110} fill={AC.white} stroke={AC.border}>
+        <text x={750} y={294} textAnchor="middle" fontSize={11} fontWeight={700} fill={AC.text}>📦 Data Services</text>
+        <text x={750} y={314} textAnchor="middle" fontSize={9} fill={AC.textMuted}>Polars (read/write)</text>
+        <text x={750} y={328} textAnchor="middle" fontSize={9} fill={AC.textMuted}>Excel parsing</text>
+        <text x={750} y={342} textAnchor="middle" fontSize={9} fill={AC.textMuted}>Schema detection</text>
+        <text x={750} y={356} textAnchor="middle" fontSize={9} fill={AC.textMuted}>Dynamic table creation</text>
+      </Box>
+      <Arrow x1={210} y1={330} x2={240} y2={330} />
+      <Arrow x1={440} y1={330} x2={470} y2={330} />
+      <Arrow x1={340} y1={380} x2={340} y2={430} />
+      <Arrow x1={555} y1={380} x2={555} y2={430} />
+      <Arrow x1={750} y1={380} x2={750} y2={430} />
+      {/* External layer */}
+      <Box x={20} y={430} w={840} h={170} fill={AC.greenLight} stroke={AC.green} dashed>
+        <text x={40} y={454} fontSize={11} fontWeight={700} fill={AC.green}>EXTERNAL SERVICES</text>
+      </Box>
+      <Box x={240} y={470} w={200} h={110} fill={AC.white} stroke={AC.border}>
+        <text x={340} y={494} textAnchor="middle" fontSize={11} fontWeight={700} fill={AC.text}>🔮 Claude API</text>
+        <text x={340} y={514} textAnchor="middle" fontSize={9} fill={AC.textMuted}>Anthropic Messages API</text>
+        <text x={340} y={528} textAnchor="middle" fontSize={9} fill={AC.textMuted}>Tool use (save_knowledge,</text>
+        <text x={340} y={542} textAnchor="middle" fontSize={9} fill={AC.textMuted}>create_scenario, list_scenarios)</text>
+        <text x={340} y={558} textAnchor="middle" fontSize={9} fill={AC.textMuted}>Multi-turn streaming</text>
+      </Box>
+      <Box x={470} y={470} w={170} h={110} fill={AC.white} stroke={AC.border}>
+        <text x={555} y={494} textAnchor="middle" fontSize={11} fontWeight={700} fill={AC.text}>🐘 PostgreSQL</text>
+        <text x={555} y={514} textAnchor="middle" fontSize={9} fill={AC.textMuted}>models, datasets, columns</text>
+        <text x={555} y={528} textAnchor="middle" fontSize={9} fill={AC.textMuted}>scenarios, relationships</text>
+        <text x={555} y={542} textAnchor="middle" fontSize={9} fill={AC.textMuted}>knowledge_entries</text>
+        <text x={555} y={558} textAnchor="middle" fontSize={9} fill={AC.textMuted}>Dynamic data tables</text>
+      </Box>
+      <Box x={670} y={470} w={160} h={110} fill={AC.white} stroke={AC.border}>
+        <text x={750} y={494} textAnchor="middle" fontSize={11} fontWeight={700} fill={AC.text}>🚂 Railway</text>
+        <text x={750} y={514} textAnchor="middle" fontSize={9} fill={AC.textMuted}>Docker deployment</text>
+        <text x={750} y={528} textAnchor="middle" fontSize={9} fill={AC.textMuted}>FastAPI serves React</text>
+        <text x={750} y={542} textAnchor="middle" fontSize={9} fill={AC.textMuted}>Auto-scaling</text>
+        <text x={750} y={558} textAnchor="middle" fontSize={9} fill={AC.textMuted}>Managed PostgreSQL</text>
+      </Box>
+    </svg>
+  );
+}
+
+function TechStackCard({ title, color, items }) {
+  return (
+    <div style={{ background: "#fff", borderRadius: 12, padding: "18px 20px", border: "1px solid #e8ebee" }}>
+      <div style={{ fontSize: 13, fontWeight: 700, color, marginBottom: 12, paddingBottom: 8, borderBottom: `2px solid ${color}22` }}>{title}</div>
+      {items.map((item, i) => (
+        <div key={i} style={{ marginBottom: 8 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "#1a1a2e" }}>{item.label}</div>
+          <div style={{ fontSize: 11, color: "#6b7280" }}>{item.detail}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function TechFlowStep({ num, text }) {
+  return (
+    <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+      <div style={{ width: 22, height: 22, borderRadius: 6, background: "#e8f6fb", color: "#3a8faa", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, flexShrink: 0 }}>{num}</div>
+      <div style={{ fontSize: 12, color: "#374151", lineHeight: 1.5 }}>{text}</div>
+    </div>
+  );
+}
+
+function TechDetailsModal({ onClose }) {
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "flex-start", justifyContent: "center", zIndex: 1000, overflowY: "auto", padding: "32px 16px" }}>
+      <div style={{ background: "#fff", borderRadius: 16, maxWidth: 960, width: "100%", boxShadow: "0 24px 80px rgba(0,0,0,0.2)", position: "relative" }}>
+        <button onClick={onClose} style={{ position: "absolute", top: 16, right: 16, background: "#f3f4f6", border: "none", borderRadius: 8, width: 32, height: 32, cursor: "pointer", fontSize: 16, display: "flex", alignItems: "center", justifyContent: "center", color: "#6b7280" }}>×</button>
+        <div style={{ padding: "32px 32px 0" }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: "#6abbd9", textTransform: "uppercase", letterSpacing: "1px", marginBottom: 8 }}>Architecture</div>
+          <h2 style={{ fontSize: 24, fontWeight: 800, color: "#1a1a2e", margin: 0, letterSpacing: "-0.3px" }}>Technical Details</h2>
+          <p style={{ fontSize: 14, color: "#6b7280", marginTop: 8, lineHeight: 1.6 }}>
+            dataBobIQ is a full-stack financial analytics platform with AI agents, a dynamic data engine, and interactive scenario modeling.
+          </p>
+        </div>
+        <div style={{ padding: "24px 32px" }}><ArchitectureFlowDiagram /></div>
+        <div style={{ padding: "0 32px 32px" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16, marginBottom: 28 }}>
+            <TechStackCard title="Frontend" color="#6abbd9" items={[
+              { label: "React + Vite", detail: "Single-page app, hot reload" },
+              { label: "Recharts", detail: "Pivot charts, waterfall, comparison" },
+              { label: "Client-side pivot", detail: "In-browser aggregation engine" },
+              { label: "SSE streaming", detail: "Real-time chat responses" },
+            ]} />
+            <TechStackCard title="Backend" color="#7c5cbf" items={[
+              { label: "FastAPI", detail: "Async Python REST API" },
+              { label: "Polars", detail: "High-performance data processing" },
+              { label: "SQLAlchemy 2.0", detail: "Async ORM with PostgreSQL" },
+              { label: "Alembic", detail: "Schema migrations" },
+            ]} />
+            <TechStackCard title="AI & Data" color="#34a853" items={[
+              { label: "Claude API", detail: "Anthropic Messages + tool use" },
+              { label: "Two agents", detail: "Data Understanding + Scenario" },
+              { label: "Knowledge layer", detail: "5 types, Level 2-ready schemas" },
+              { label: "PostgreSQL", detail: "Metadata + dynamic data tables" },
+            ]} />
+          </div>
+          {[
+            { title: "📤 Data Flow: Upload to Analysis", steps: [
+              "User uploads Excel file → FastAPI receives multipart upload",
+              "Polars parses each sheet → detects column types, cardinality, value ranges",
+              "Dynamic PostgreSQL table created per sheet (column names from data)",
+              "AI Schema Agent profiles columns → assigns roles (dimension, measure, time, key)",
+              "Relationships auto-detected by column name + value overlap → user confirms",
+              "Frontend loads enriched data (fact table joined with dimensions) as JSON",
+              "Client-side pivot engine aggregates, filters, and renders charts",
+            ]},
+            { title: "🤖 Agent Architecture", steps: [
+              "User sends message → frontend includes agent_mode based on active tab",
+              "Backend selects system prompt + tools for Data Agent or Scenario Agent",
+              "AI Context Builder assembles XML: schemas, columns, glossary, knowledge entries",
+              "Claude API called with streaming → tool calls executed in loop (max 5 rounds)",
+              "Tool results (save_knowledge, create_scenario) persisted to PostgreSQL",
+              "SSE stream sends text deltas + events (knowledge_saved, scenario_rule) to frontend",
+              "Frontend updates UI live — knowledge panel refreshes, scenario appears",
+            ]},
+            { title: "🔮 Scenario Engine", steps: [
+              "Scenario has a base_year (12 months of real data) + rules array",
+              "Projection: base year data copied to target year, calendar fields updated",
+              "Months with no actuals get averaged template rows (base value = 0)",
+              "Rules applied: multiplier (×1.10) or offset (+25K/month), with filters",
+              "Distribution: 'use_base' (proportional to baseline) or 'equal' (flat per period)",
+              "Comparison table: ACT vs SCENARIO with Δ column, year-shifted variance",
+              "Waterfall chart: shows what drives the change by dimension breakdown",
+            ]},
+          ].map((section, si) => (
+            <div key={si} style={{ background: "#f8f9fb", borderRadius: 12, padding: "20px 24px", marginBottom: si < 2 ? 20 : 0 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: "#1a1a2e", marginBottom: 12 }}>{section.title}</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {section.steps.map((text, i) => <TechFlowStep key={i} num={i + 1} text={text} />)}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── FLOW CARD HELPERS ────────────────────────────────────────────
 function FlowCard({ step }) {
   return (
@@ -2937,6 +3172,7 @@ function ModelLandingPage({ models, loading, onSelect, onRefresh, onShowHowItWor
   const [editName, setEditName] = useState("");
   const [hoveredId, setHoveredId] = useState(null);
   const [menuOpenId, setMenuOpenId] = useState(null);
+  const [showTechDetails, setShowTechDetails] = useState(false);
 
   const handleCreate = async () => {
     if (!newName.trim() || saving) return;
@@ -2978,13 +3214,22 @@ function ModelLandingPage({ models, loading, onSelect, onRefresh, onShowHowItWor
         <span style={{ fontSize: 20, fontWeight: 800, color: "#1a1a2e", letterSpacing: "-0.5px" }}>
           data<span style={{ color: "#6abbd9" }}>Bob</span>IQ
         </span>
-        <button onClick={onShowHowItWorks}
-          onMouseEnter={e => { e.currentTarget.style.borderColor = C.brand; e.currentTarget.style.color = C.brand; }}
-          onMouseLeave={e => { e.currentTarget.style.borderColor = "#e0e3e8"; e.currentTarget.style.color = "#4b5563"; }}
-          style={{ background: "none", border: "1.5px solid #e0e3e8", borderRadius: 8, padding: "6px 16px", fontSize: 13, fontWeight: 600, color: "#4b5563", cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 6, transition: "all 0.15s" }}>
-          <span style={{ fontSize: 15 }}>📖</span> How It Works
-        </button>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <button onClick={onShowHowItWorks}
+            onMouseEnter={e => { e.currentTarget.style.borderColor = C.brand; e.currentTarget.style.color = C.brand; }}
+            onMouseLeave={e => { e.currentTarget.style.borderColor = "#e0e3e8"; e.currentTarget.style.color = "#4b5563"; }}
+            style={{ background: "none", border: "1.5px solid #e0e3e8", borderRadius: 8, padding: "6px 16px", fontSize: 13, fontWeight: 600, color: "#4b5563", cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 6, transition: "all 0.15s" }}>
+            <span style={{ fontSize: 15 }}>📖</span> How It Works
+          </button>
+          <button onClick={() => setShowTechDetails(true)}
+            onMouseEnter={e => { e.currentTarget.style.borderColor = C.brand; e.currentTarget.style.color = C.brand; }}
+            onMouseLeave={e => { e.currentTarget.style.borderColor = "#e0e3e8"; e.currentTarget.style.color = "#4b5563"; }}
+            style={{ background: "none", border: "1.5px solid #e0e3e8", borderRadius: 8, padding: "6px 16px", fontSize: 13, fontWeight: 600, color: "#4b5563", cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 6, transition: "all 0.15s" }}>
+            <span style={{ fontSize: 15 }}>⚙️</span> Technical Details
+          </button>
+        </div>
       </div>
+      {showTechDetails && <TechDetailsModal onClose={() => setShowTechDetails(false)} />}
 
       {/* ── HERO + FLOW ── */}
       <div style={{ background: "linear-gradient(160deg, #f0f9fd 0%, #ffffff 40%, #f8f9fb 100%)", padding: "44px 32px 40px", borderBottom: "1px solid #eef0f2", position: "relative", overflow: "hidden" }}>
@@ -3317,6 +3562,7 @@ export default function App() {
   const [currentModelId, setCurrentModelId] = useState(null);
   const [currentModelName, setCurrentModelName] = useState("");
   const [showHowItWorks, setShowHowItWorks] = useState(false);
+  const [showTechDetails, setShowTechDetails] = useState(false);
 
   // ── Onboarding state (per model, persisted in localStorage) ─────
   const [onboardingState, setOnboardingState] = useState(() => {
@@ -3604,6 +3850,12 @@ export default function App() {
             style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, color: C.textMuted, padding: "4px 8px", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 4, borderRadius: 6, transition: "color 0.15s" }}>
             📖 Guide
           </button>
+          <button onClick={() => setShowTechDetails(true)}
+            onMouseEnter={e => e.currentTarget.style.color = C.brand}
+            onMouseLeave={e => e.currentTarget.style.color = C.textMuted}
+            style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, color: C.textMuted, padding: "4px 8px", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 4, borderRadius: 6, transition: "color 0.15s" }}>
+            ⚙️ Tech
+          </button>
         </div>
       </div>
 
@@ -3633,6 +3885,7 @@ export default function App() {
       )}
       {/* ── How It Works modal ── */}
       {showHowItWorks && <HowItWorksModal onClose={() => setShowHowItWorks(false)} />}
+      {showTechDetails && <TechDetailsModal onClose={() => setShowTechDetails(false)} />}
     </div>
   );
 }
