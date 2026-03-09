@@ -12,6 +12,24 @@ import polars as pl
 
 logger = logging.getLogger(__name__)
 
+# Polars ≥ 0.20 renamed Utf8 → String; support both versions
+_Utf8: type = getattr(pl, "String", None) or pl.Utf8  # type: ignore[attr-defined]
+
+
+def _normalize_utf8_view(df: pl.DataFrame) -> pl.DataFrame:
+    """Cast Utf8View / LargeUtf8 columns to String before further processing.
+
+    Newer fastexcel / Polars-Arrow may produce ``Utf8View`` columns whose
+    direct casting to numeric/date types raises errors.  Normalising to the
+    canonical String type first makes all downstream casts work.
+    """
+    casts = []
+    for col_name in df.columns:
+        dtype_repr = str(df[col_name].dtype)
+        if "View" in dtype_repr or "LargeUtf8" in dtype_repr:
+            casts.append(pl.col(col_name).cast(pl.String, strict=False).alias(col_name))
+    return df.with_columns(casts) if casts else df
+
 # ---------------------------------------------------------------------------
 # Public data classes
 # ---------------------------------------------------------------------------
@@ -328,7 +346,7 @@ def _apply_date_norm(series: pl.Series, fmt: str, output_type: str) -> pl.Series
                 else v
                 for v in series.to_list()
             ],
-            dtype=pl.Utf8,
+            dtype=_Utf8,
         )
         return result
 
@@ -341,7 +359,7 @@ def _apply_date_norm(series: pl.Series, fmt: str, output_type: str) -> pl.Series
     result = pl.Series(
         series.name,
         [p if p is not None else s for p, s in zip(parsed.to_list(), stripped.to_list())],
-        dtype=pl.Utf8,
+        dtype=_Utf8,
     )
     return result
 
@@ -355,13 +373,17 @@ def normalize_time_series(series: pl.Series) -> tuple[pl.Series, str]:
     """
     # Polars Date → ISO string
     if series.dtype == pl.Date:
-        return series.cast(pl.Utf8, strict=False), "iso_date"
+        return series.cast(_Utf8, strict=False), "iso_date"
     # Polars Datetime → ISO date string
     if series.dtype in (pl.Datetime,) or str(series.dtype).startswith("Datetime"):
         return series.dt.strftime("%Y-%m-%d"), "iso_date"
 
+    # Normalise Utf8View before string operations
+    if "View" in str(series.dtype) or "LargeUtf8" in str(series.dtype):
+        series = series.cast(pl.String, strict=False)
+
     # String: detect format from samples
-    str_series = series.cast(pl.Utf8, strict=False)
+    str_series = series.cast(_Utf8, strict=False)
     samples = [s.strip() for s in str_series.drop_nulls().head(100).to_list() if s]
     if not samples:
         return str_series, "iso_date"
@@ -494,6 +516,8 @@ def _read_excel(file_path: Path) -> dict[str, pl.DataFrame]:
             sheets = raw
         else:
             sheets = {file_path.stem: raw}
+        # Normalise Utf8View columns produced by newer fastexcel/Arrow
+        sheets = {name: _normalize_utf8_view(df) for name, df in sheets.items()}
         logger.info("Read %d sheet(s) from %s via calamine", len(sheets), file_path.name)
     except Exception as exc:
         logger.warning("calamine failed (%s), falling back to openpyxl", exc)
@@ -549,6 +573,7 @@ def _read_csv(file_path: Path) -> dict[str, pl.DataFrame]:
             encoding="utf8-lossy",
             null_values=["", "NA", "N/A", "#N/A", "null", "NULL", "-"],
         )
+        df = _normalize_utf8_view(df)
         logger.info("Read CSV %s: %d rows × %d cols", file_path.name, len(df), len(df.columns))
         return {file_path.stem: df}
     except Exception as exc:

@@ -738,7 +738,10 @@ async def list_model_datasets(model_id: str, db: AsyncSession = Depends(get_db))
     """Return all datasets belonging to a model."""
     result = await db.execute(
         select(Dataset)
-        .where(Dataset.model_id == model_id, Dataset.status != "deleted")
+        .where(
+            (Dataset.model_id == model_id) | (Dataset.model_id.is_(None)),
+            Dataset.status != "deleted",
+        )
         .options(
             selectinload(Dataset.columns),
             selectinload(Dataset.source_relationships),
@@ -755,7 +758,7 @@ async def build_model_baseline(model_id: str, body: BaselineRequest, db: AsyncSe
     result = await db.execute(
         select(Dataset).where(
             Dataset.id == body.fact_dataset_id,
-            Dataset.model_id == model_id,
+            (Dataset.model_id == model_id) | (Dataset.model_id.is_(None)),
             Dataset.status != "deleted",
         )
     )
@@ -772,7 +775,9 @@ async def build_model_baseline(model_id: str, body: BaselineRequest, db: AsyncSe
 async def list_model_relationships(model_id: str, db: AsyncSession = Depends(get_db)):
     """Return all relationships whose source dataset belongs to this model."""
     result = await db.execute(
-        select(DatasetRelationship).where(DatasetRelationship.model_id == model_id)
+        select(DatasetRelationship).where(
+            (DatasetRelationship.model_id == model_id) | (DatasetRelationship.model_id.is_(None))
+        )
     )
     return [DatasetRelationshipResponse.model_validate(r) for r in result.scalars().all()]
 
@@ -868,9 +873,9 @@ async def list_model_knowledge(model_id: str, db: AsyncSession = Depends(get_db)
     result = await db.execute(
         select(KnowledgeEntry)
         .where(
-            (KnowledgeEntry.model_id == model_id) | (KnowledgeEntry.model_id.is_(None))
+            KnowledgeEntry.model_id == model_id,
+            KnowledgeEntry.confidence != "rejected",
         )
-        .where(KnowledgeEntry.confidence != "rejected")
         .order_by(KnowledgeEntry.entry_type, KnowledgeEntry.created_at.desc())
     )
     return [KnowledgeEntryResponse.model_validate(e) for e in result.scalars().all()]
@@ -911,7 +916,7 @@ async def model_chat(model_id: str, request: ChatRequest, db: AsyncSession = Dep
         select(Dataset)
         .where(
             Dataset.id == request.dataset_id,
-            Dataset.model_id == model_id,
+            (Dataset.model_id == model_id) | (Dataset.model_id.is_(None)),
             Dataset.status != "deleted",
         )
         .options(selectinload(Dataset.columns))
@@ -1141,7 +1146,11 @@ async def get_model_dataset(model_id: str, dataset_id: str, db: AsyncSession = D
     await _require_model(model_id, db)
     result = await db.execute(
         select(Dataset)
-        .where(Dataset.id == dataset_id, Dataset.model_id == model_id, Dataset.status != "deleted")
+        .where(
+            Dataset.id == dataset_id,
+            (Dataset.model_id == model_id) | (Dataset.model_id.is_(None)),
+            Dataset.status != "deleted",
+        )
         .options(
             selectinload(Dataset.columns),
             selectinload(Dataset.source_relationships),
@@ -1163,7 +1172,11 @@ async def delete_model_dataset(
 ):
     await _require_model(model_id, db)
     result = await db.execute(
-        select(Dataset).where(Dataset.id == dataset_id, Dataset.model_id == model_id, Dataset.status != "deleted")
+        select(Dataset).where(
+            Dataset.id == dataset_id,
+            (Dataset.model_id == model_id) | (Dataset.model_id.is_(None)),
+            Dataset.status != "deleted",
+        )
     )
     dataset = result.scalar_one_or_none()
     if dataset is None:
@@ -1190,9 +1203,12 @@ async def update_model_column(
     db: AsyncSession = Depends(get_db),
 ):
     await _require_model(model_id, db)
-    # Verify dataset belongs to model
+    # Verify dataset belongs to model (or is global)
     ds_result = await db.execute(
-        select(Dataset).where(Dataset.id == dataset_id, Dataset.model_id == model_id)
+        select(Dataset).where(
+            Dataset.id == dataset_id,
+            (Dataset.model_id == model_id) | (Dataset.model_id.is_(None)),
+        )
     )
     if ds_result.scalar_one_or_none() is None:
         raise HTTPException(status_code=404, detail="Dataset not found in this model")
@@ -1219,7 +1235,11 @@ async def get_model_available_periods(model_id: str, dataset_id: str, db: AsyncS
     await _require_model(model_id, db)
     result = await db.execute(
         select(Dataset)
-        .where(Dataset.id == dataset_id, Dataset.model_id == model_id, Dataset.status != "deleted")
+        .where(
+            Dataset.id == dataset_id,
+            (Dataset.model_id == model_id) | (Dataset.model_id.is_(None)),
+            Dataset.status != "deleted",
+        )
         .options(selectinload(Dataset.columns))
     )
     dataset = result.scalar_one_or_none()
@@ -1363,7 +1383,7 @@ async def compute_model_scenario(
     fact_result = await db.execute(
         select(Dataset).where(
             Dataset.id == body.fact_dataset_id,
-            Dataset.model_id == model_id,
+            (Dataset.model_id == model_id) | (Dataset.model_id.is_(None)),
             Dataset.status != "deleted",
         )
     )
