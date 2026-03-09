@@ -1079,21 +1079,21 @@ function KnowledgePanel({ datasetId, knowledgeRefreshKey, modelId = null }) {
 
   async function handleConfirm(id) {
     try {
-      const updated = await updateKnowledge(id, { confidence: "confirmed" });
+      const updated = await updateKnowledge(id, { confidence: "confirmed" }, modelId);
       setEntries(p => p.map(e => e.id === id ? updated : e));
     } catch (e) { console.error(e); }
   }
 
   async function handleSaveEdit(id, updates) {
     try {
-      const updated = await updateKnowledge(id, updates);
+      const updated = await updateKnowledge(id, updates, modelId);
       setEntries(p => p.map(e => e.id === id ? updated : e));
     } catch (e) { console.error(e); }
   }
 
   async function handleDelete(id) {
     try {
-      await deleteKnowledge(id);
+      await deleteKnowledge(id, modelId);
       setEntries(p => p.filter(e => e.id !== id));
     } catch (e) { console.error(e); }
   }
@@ -1445,7 +1445,7 @@ function SavedViewsBar({ savedViews, onSave, onLoad, onDelete }) {
 // ═══════════════════════════════════════════════════════════════
 // ACTUALS VIEW
 // ═══════════════════════════════════════════════════════════════
-function ActualsView({ baseline, schema }) {
+function ActualsView({ baseline, schema, modelId = null }) {
   const dims = useMemo(() => getDimFields(baseline), [baseline]);
   const measures = useMemo(() => getMeasureFields(baseline, schema), [baseline, schema]);
   const [rowFs, setRowFs] = useState(() => []);
@@ -1454,13 +1454,20 @@ function ActualsView({ baseline, schema }) {
   const [filters, setFilters] = useState({});
   const filtered = useMemo(() => applyFilters(baseline, filters), [baseline, filters]);
 
+  const viewsKey = modelId ? `databobiq_saved_views_actuals_${modelId}` : "databobiq_saved_views_actuals";
   const [savedViews, setSavedViews] = useState(() => {
-    try { const v = localStorage.getItem("databobiq_saved_views_actuals"); return v ? JSON.parse(v) : []; }
+    try { const v = localStorage.getItem(viewsKey); return v ? JSON.parse(v) : []; }
     catch { return []; }
   });
   useEffect(() => {
-    localStorage.setItem("databobiq_saved_views_actuals", JSON.stringify(savedViews));
-  }, [savedViews]);
+    if (!modelId) return;
+    try { const v = localStorage.getItem(viewsKey); setSavedViews(v ? JSON.parse(v) : []); }
+    catch { setSavedViews([]); }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modelId]);
+  useEffect(() => {
+    localStorage.setItem(viewsKey, JSON.stringify(savedViews));
+  }, [savedViews, viewsKey]);
 
   return (
     <div>
@@ -1606,13 +1613,20 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
   const [valF, setValF] = useState(() => "");
   const [filters, setFilters] = useState({});
 
+  const scViewsKey = modelId ? `databobiq_saved_views_scenario_${modelId}` : "databobiq_saved_views_scenario";
   const [savedViews, setSavedViews] = useState(() => {
-    try { const v = localStorage.getItem("databobiq_saved_views_scenario"); return v ? JSON.parse(v) : []; }
+    try { const v = localStorage.getItem(scViewsKey); return v ? JSON.parse(v) : []; }
     catch { return []; }
   });
   useEffect(() => {
-    localStorage.setItem("databobiq_saved_views_scenario", JSON.stringify(savedViews));
-  }, [savedViews]);
+    if (!modelId) return;
+    try { const v = localStorage.getItem(scViewsKey); setSavedViews(v ? JSON.parse(v) : []); }
+    catch { setSavedViews([]); }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modelId]);
+  useEffect(() => {
+    localStorage.setItem(scViewsKey, JSON.stringify(savedViews));
+  }, [savedViews, scViewsKey]);
 
   const [newRule, setNewRule] = useState({ name: "", type: "multiplier", factor: 1.05, offset: 0, filters: {}, periodFrom: "", periodTo: "", distribution: "use_base" });
   const [ruleFilterFields, setRuleFilterFields] = useState([]);
@@ -2478,7 +2492,7 @@ function ChatPanel({ baseline, scenarios, setScenarios, setActiveTab, activeTab,
                   const newConfig = pendingBaseConfig
                     ? { ...(sc.base_config || {}), ...pendingBaseConfig }
                     : sc.base_config;
-                  updateScenario(sc.id, { rules: newRules, base_config: newConfig }).catch(console.error);
+                  updateScenario(sc.id, { rules: newRules, base_config: newConfig }, modelId).catch(console.error);
                   return { ...sc, rules: newRules, base_config: newConfig };
                 });
                 return updated;
@@ -2706,7 +2720,7 @@ function UploadModal({ isOpen, onClose, onUploaded, schemaList, modelId = null }
 
   async function handleDelete(dsId) {
     try {
-      await deleteDataset(dsId);
+      await deleteDataset(dsId, modelId);
       onUploaded();
     } catch (e) {
       console.error("Delete failed", e);
@@ -3773,7 +3787,7 @@ export default function App() {
         for (const col of tinfo.columns) {
           const prevCol = prevCols.find(c => c.name === col.name);
           if (prevCol && prevCol.role !== col.role && col.id && tinfo.id) {
-            apiUpdateColumnRole(tinfo.id, col.id, { column_role: col.role }).catch(console.error);
+            apiUpdateColumnRole(tinfo.id, col.id, { column_role: col.role }, currentModelId).catch(console.error);
           }
         }
       }
@@ -3791,7 +3805,7 @@ export default function App() {
       // Deleted
       for (const r of prev) {
         if (!nextIds.has(r.id)) {
-          apiDeleteRelationship(r.id).then(() => queryClient.invalidateQueries({ queryKey: ["datasets", currentModelId] })).catch(console.error);
+          apiDeleteRelationship(r.id, currentModelId).then(() => queryClient.invalidateQueries({ queryKey: ["datasets", currentModelId] })).catch(console.error);
         }
       }
       // Added (local temp ID = string like "gl_entries-accounts-…")
@@ -3811,7 +3825,7 @@ export default function App() {
         if (prevIds.has(r.id)) {
           const p = prev.find(x => x.id === r.id);
           if (p && (p.fromCol !== r.fromCol || p.toCol !== r.toCol)) {
-            apiUpdateRelationship(r.id, { source_column: r.fromCol, target_column: r.toCol })
+            apiUpdateRelationship(r.id, { source_column: r.fromCol, target_column: r.toCol }, currentModelId)
               .then(() => queryClient.invalidateQueries({ queryKey: ["datasets", currentModelId] }))
               .catch(console.error);
           }
@@ -3830,7 +3844,7 @@ export default function App() {
       // Deleted
       for (const s of prev) {
         if (!nextIds.has(s.id)) {
-          deleteScenario(s.id).catch(console.error);
+          deleteScenario(s.id, currentModelId).catch(console.error);
         }
       }
       // Modified (addScenario handles creation directly, so only update existing ids)
@@ -3838,7 +3852,7 @@ export default function App() {
         if (prevIds.has(s.id)) {
           const p = prev.find(x => x.id === s.id);
           if (p && JSON.stringify(p) !== JSON.stringify(s)) {
-            updateScenario(s.id, { name: s.name, rules: s.rules, color: s.color, base_config: s.base_config || null }).catch(console.error);
+            updateScenario(s.id, { name: s.name, rules: s.rules, color: s.color, base_config: s.base_config || null }, currentModelId).catch(console.error);
           }
         }
       }
@@ -3937,7 +3951,7 @@ export default function App() {
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
         <div style={{ flex: 1, overflow: "auto", padding: 24 }}>
           {tab === "schema" && <SchemaView schema={schema} setSchema={handleSetSchema} relationships={relationships} setRelationships={handleSetRelationships} onOpenUpload={() => setUploadOpen(true)} factDatasetId={factDataset?.dataset.id} knowledgeRefreshKey={knowledgeRefreshKey} modelId={currentModelId} />}
-          {tab === "actuals" && <ActualsView baseline={baseline} schema={schema} />}
+          {tab === "actuals" && <ActualsView baseline={baseline} schema={schema} modelId={currentModelId} />}
           {tab === "scenarios" && <ScenariosView baseline={baseline} scenarios={scenarios} setScenarios={handleSetScenarios} schema={schema} factDatasetId={factDataset?.dataset.id} relIds={relIds} modelId={currentModelId} />}
         </div>
         <ChatPanel baseline={baseline} scenarios={scenarios} setScenarios={handleSetScenarios} setActiveTab={setTab} activeTab={tab} datasetId={factDataset?.dataset.id} onKnowledgeSaved={() => setKnowledgeRefreshKey(k => k + 1)} pendingOnboardingId={pendingOnboardingId} onOnboardingConsumed={() => setPendingOnboardingId(null)} modelId={currentModelId} />

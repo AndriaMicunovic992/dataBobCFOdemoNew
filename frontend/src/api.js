@@ -61,12 +61,19 @@ export async function getDatasets(modelId) {
 }
 
 /** Get a single dataset's full schema. */
-export async function getDataset(datasetId) {
+export async function getDataset(datasetId, modelId = null) {
+  if (modelId) return req(`/models/${modelId}/datasets/${datasetId}`)
   return req(`/datasets/${datasetId}`)
 }
 
 /** Update a column's role or display name. */
-export async function updateColumnRole(datasetId, columnId, updates) {
+export async function updateColumnRole(datasetId, columnId, updates, modelId = null) {
+  if (modelId) {
+    return req(`/models/${modelId}/datasets/${datasetId}/columns/${columnId}`, {
+      method: 'PATCH',
+      ...json(updates),
+    })
+  }
   return req(`/datasets/${datasetId}/columns/${columnId}`, {
     method: 'PATCH',
     ...json(updates),
@@ -74,7 +81,8 @@ export async function updateColumnRole(datasetId, columnId, updates) {
 }
 
 /** Soft-delete a dataset. */
-export async function deleteDataset(datasetId) {
+export async function deleteDataset(datasetId, modelId = null) {
+  if (modelId) return req(`/models/${modelId}/datasets/${datasetId}`, { method: 'DELETE' })
   return req(`/datasets/${datasetId}`, { method: 'DELETE' })
 }
 
@@ -101,11 +109,13 @@ export async function createRelationship(body, modelId = null) {
   return req(path, { method: 'POST', ...json(body) })
 }
 
-export async function updateRelationship(id, body) {
+export async function updateRelationship(id, body, modelId = null) {
+  if (modelId) return req(`/models/${modelId}/relationships/${id}`, { method: 'PUT', ...json(body) })
   return req(`/relationships/${id}`, { method: 'PUT', ...json(body) })
 }
 
-export async function deleteRelationship(id) {
+export async function deleteRelationship(id, modelId = null) {
+  if (modelId) return req(`/models/${modelId}/relationships/${id}`, { method: 'DELETE' })
   return req(`/relationships/${id}`, { method: 'DELETE' })
 }
 
@@ -123,22 +133,27 @@ export async function createScenario(body, modelId = null) {
   return req(path, { method: 'POST', ...json(body) })
 }
 
-export async function updateScenario(id, body) {
+export async function updateScenario(id, body, modelId = null) {
+  if (modelId) return req(`/models/${modelId}/scenarios/${id}`, { method: 'PUT', ...json(body) })
   return req(`/scenarios/${id}`, { method: 'PUT', ...json(body) })
 }
 
-export async function deleteScenario(id) {
+export async function deleteScenario(id, modelId = null) {
+  if (modelId) return req(`/models/${modelId}/scenarios/${id}`, { method: 'DELETE' })
   return req(`/scenarios/${id}`, { method: 'DELETE' })
 }
 
 /** Compute a scenario server-side. Returns columns, rows (including projections). */
-export async function computeScenario(scenarioId, factDatasetId, relationshipIds = [], valueColumn = null) {
+export async function computeScenario(scenarioId, factDatasetId, relationshipIds = [], valueColumn = null, modelId = null) {
   const body = {
     fact_dataset_id: factDatasetId,
     relationships: relationshipIds.map(id => ({ rel_id: id })),
   }
   if (valueColumn) body.value_column = valueColumn
-  return req(`/scenarios/${scenarioId}/compute`, { method: 'POST', ...json(body) })
+  const path = modelId
+    ? `/models/${modelId}/scenarios/${scenarioId}/compute`
+    : `/scenarios/${scenarioId}/compute`
+  return req(path, { method: 'POST', ...json(body) })
 }
 
 // ── Knowledge entries ─────────────────────────────────────────────────────────
@@ -153,11 +168,13 @@ export async function createKnowledge(datasetId, body, modelId = null) {
   return req(`/datasets/${datasetId}/knowledge`, { method: 'POST', ...json(body) })
 }
 
-export async function updateKnowledge(entryId, body) {
+export async function updateKnowledge(entryId, body, modelId = null) {
+  if (modelId) return req(`/models/${modelId}/knowledge/${entryId}`, { method: 'PUT', ...json(body) })
   return req(`/knowledge/${entryId}`, { method: 'PUT', ...json(body) })
 }
 
-export async function deleteKnowledge(entryId) {
+export async function deleteKnowledge(entryId, modelId = null) {
+  if (modelId) return req(`/models/${modelId}/knowledge/${entryId}`, { method: 'DELETE' })
   return req(`/knowledge/${entryId}`, { method: 'DELETE' })
 }
 

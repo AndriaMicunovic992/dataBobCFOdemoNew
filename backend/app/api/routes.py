@@ -614,6 +614,17 @@ async def _run_agent_and_persist(dataset_id: str) -> None:
 _DEFAULT_MODEL_ID = "00000000000000000000000000000001"
 
 
+async def _require_model(model_id: str, db: AsyncSession) -> Model:
+    """Return the model or raise 404. Used by all model-scoped endpoints."""
+    result = await db.execute(
+        select(Model).where(Model.id == model_id, Model.status != "archived")
+    )
+    m = result.scalar_one_or_none()
+    if m is None:
+        raise HTTPException(status_code=404, detail="Model not found")
+    return m
+
+
 async def _ensure_default_model(db: AsyncSession) -> Model:
     """Return the default model, creating it if it doesn't exist."""
     result = await db.execute(select(Model).where(Model.id == _DEFAULT_MODEL_ID))
@@ -894,9 +905,15 @@ async def model_chat(model_id: str, request: ChatRequest, db: AsyncSession = Dep
     from app.services.chat import stream_chat
     from app.services.ai_context import build_agent_context
 
+    await _require_model(model_id, db)
+
     result = await db.execute(
         select(Dataset)
-        .where(Dataset.id == request.dataset_id, Dataset.status != "deleted")
+        .where(
+            Dataset.id == request.dataset_id,
+            Dataset.model_id == model_id,
+            Dataset.status != "deleted",
+        )
         .options(selectinload(Dataset.columns))
     )
     dataset = result.scalar_one_or_none()
@@ -1113,6 +1130,358 @@ async def upload_file_for_model(
     if result.scalar_one_or_none() is None:
         raise HTTPException(status_code=404, detail="Model not found")
     return await upload_file(background_tasks, file, name, model_id, db)
+
+
+# ---------------------------------------------------------------------------
+# Model-scoped single-resource endpoints
+# ---------------------------------------------------------------------------
+
+@router.get("/models/{model_id}/datasets/{dataset_id}", response_model=SchemaResponse)
+async def get_model_dataset(model_id: str, dataset_id: str, db: AsyncSession = Depends(get_db)):
+    await _require_model(model_id, db)
+    result = await db.execute(
+        select(Dataset)
+        .where(Dataset.id == dataset_id, Dataset.model_id == model_id, Dataset.status != "deleted")
+        .options(
+            selectinload(Dataset.columns),
+            selectinload(Dataset.source_relationships),
+            selectinload(Dataset.target_relationships),
+        )
+    )
+    ds = result.scalar_one_or_none()
+    if ds is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    return _schema_response(ds)
+
+
+@router.delete("/models/{model_id}/datasets/{dataset_id}", status_code=204)
+async def delete_model_dataset(
+    model_id: str,
+    dataset_id: str,
+    hard: bool = Query(default=False),
+    db: AsyncSession = Depends(get_db),
+):
+    await _require_model(model_id, db)
+    result = await db.execute(
+        select(Dataset).where(Dataset.id == dataset_id, Dataset.model_id == model_id, Dataset.status != "deleted")
+    )
+    dataset = result.scalar_one_or_none()
+    if dataset is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    if isinstance(dataset.ai_notes, dict) and dataset.ai_notes.get("is_system"):
+        raise HTTPException(status_code=403, detail="System datasets cannot be deleted.")
+    if hard:
+        storage_svc.drop_dataset_table(sync_engine, dataset.table_name)
+        await db.delete(dataset)
+    else:
+        dataset.status = "deleted"
+    await db.commit()
+
+
+@router.patch(
+    "/models/{model_id}/datasets/{dataset_id}/columns/{column_id}",
+    response_model=DatasetColumnResponse,
+)
+async def update_model_column(
+    model_id: str,
+    dataset_id: str,
+    column_id: str,
+    body: DatasetColumnUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    await _require_model(model_id, db)
+    # Verify dataset belongs to model
+    ds_result = await db.execute(
+        select(Dataset).where(Dataset.id == dataset_id, Dataset.model_id == model_id)
+    )
+    if ds_result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Dataset not found in this model")
+    result = await db.execute(
+        select(DatasetColumn).where(
+            DatasetColumn.id == column_id,
+            DatasetColumn.dataset_id == dataset_id,
+        )
+    )
+    col = result.scalar_one_or_none()
+    if col is None:
+        raise HTTPException(status_code=404, detail="Column not found")
+    if body.column_role is not None:
+        col.column_role = body.column_role
+    if body.display_name is not None:
+        col.display_name = body.display_name
+    await db.commit()
+    await db.refresh(col)
+    return DatasetColumnResponse.model_validate(col)
+
+
+@router.get("/models/{model_id}/datasets/{dataset_id}/available-periods")
+async def get_model_available_periods(model_id: str, dataset_id: str, db: AsyncSession = Depends(get_db)):
+    await _require_model(model_id, db)
+    result = await db.execute(
+        select(Dataset)
+        .where(Dataset.id == dataset_id, Dataset.model_id == model_id, Dataset.status != "deleted")
+        .options(selectinload(Dataset.columns))
+    )
+    dataset = result.scalar_one_or_none()
+    if dataset is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    time_cols = [c.column_name for c in dataset.columns if c.column_role == "time"]
+    period_candidates = list(scenario_svc._PERIOD_COLUMN_CANDIDATES)
+    period_col: str | None = None
+    for tc in time_cols:
+        period_col = tc
+        break
+    if not period_col:
+        col_names_lower = {c.column_name.lower(): c.column_name for c in dataset.columns}
+        for candidate in period_candidates:
+            if candidate in col_names_lower:
+                period_col = col_names_lower[candidate]
+                break
+    if not period_col:
+        return {"periods": [], "years": [], "period_column": None}
+    try:
+        df = storage_svc.read_dataset(sync_engine, dataset.table_name, columns=[period_col])
+        periods = sorted(df[period_col].cast(pl.Utf8).drop_nulls().unique().to_list())
+        years = sorted(set(p[:4] for p in periods if len(p) >= 4))
+        return {"periods": periods, "years": years, "period_column": period_col}
+    except Exception as exc:
+        logger.warning("Could not read periods for dataset %s: %s", dataset_id, exc)
+        return {"periods": [], "years": [], "period_column": None}
+
+
+@router.put("/models/{model_id}/relationships/{rel_id}", response_model=DatasetRelationshipResponse)
+async def update_model_relationship(
+    model_id: str,
+    rel_id: str,
+    body: DatasetRelationshipUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    await _require_model(model_id, db)
+    result = await db.execute(
+        select(DatasetRelationship).where(
+            DatasetRelationship.id == rel_id,
+            DatasetRelationship.model_id == model_id,
+        )
+    )
+    rel = result.scalar_one_or_none()
+    if rel is None:
+        raise HTTPException(status_code=404, detail="Relationship not found")
+    if body.source_column is not None:
+        rel.source_column = body.source_column
+    if body.target_column is not None:
+        rel.target_column = body.target_column
+    src_r = await db.execute(select(Dataset).where(Dataset.id == rel.source_dataset_id))
+    tgt_r = await db.execute(select(Dataset).where(Dataset.id == rel.target_dataset_id))
+    src_ds = src_r.scalar_one()
+    tgt_ds = tgt_r.scalar_one()
+    coverage_pct, overlap_count = _compute_coverage(
+        src_ds.table_name, rel.source_column,
+        tgt_ds.table_name, rel.target_column,
+    )
+    rel.coverage_pct = coverage_pct
+    rel.overlap_count = overlap_count
+    await db.commit()
+    await db.refresh(rel)
+    return DatasetRelationshipResponse.model_validate(rel)
+
+
+@router.delete("/models/{model_id}/relationships/{rel_id}", status_code=204)
+async def delete_model_relationship(model_id: str, rel_id: str, db: AsyncSession = Depends(get_db)):
+    await _require_model(model_id, db)
+    result = await db.execute(
+        select(DatasetRelationship).where(
+            DatasetRelationship.id == rel_id,
+            DatasetRelationship.model_id == model_id,
+        )
+    )
+    rel = result.scalar_one_or_none()
+    if rel is None:
+        raise HTTPException(status_code=404, detail="Relationship not found")
+    await db.delete(rel)
+    await db.commit()
+
+
+@router.put("/models/{model_id}/scenarios/{scenario_id}", response_model=ScenarioResponse)
+async def update_model_scenario(
+    model_id: str,
+    scenario_id: str,
+    body: ScenarioUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    await _require_model(model_id, db)
+    result = await db.execute(
+        select(Scenario).where(Scenario.id == scenario_id, Scenario.model_id == model_id)
+    )
+    scenario = result.scalar_one_or_none()
+    if scenario is None:
+        raise HTTPException(status_code=404, detail="Scenario not found")
+    if body.name is not None:
+        scenario.name = body.name
+    if body.rules is not None:
+        scenario.rules = body.rules
+    if body.color is not None:
+        scenario.color = body.color
+    if body.base_config is not None:
+        if hasattr(body.base_config, 'model_dump'):
+            scenario.base_config = body.base_config.model_dump()
+        elif isinstance(body.base_config, dict):
+            scenario.base_config = body.base_config
+        else:
+            scenario.base_config = None
+    await db.commit()
+    await db.refresh(scenario)
+    return ScenarioResponse.model_validate(scenario)
+
+
+@router.delete("/models/{model_id}/scenarios/{scenario_id}", status_code=204)
+async def delete_model_scenario(model_id: str, scenario_id: str, db: AsyncSession = Depends(get_db)):
+    await _require_model(model_id, db)
+    result = await db.execute(
+        select(Scenario).where(Scenario.id == scenario_id, Scenario.model_id == model_id)
+    )
+    scenario = result.scalar_one_or_none()
+    if scenario is None:
+        raise HTTPException(status_code=404, detail="Scenario not found")
+    await db.delete(scenario)
+    await db.commit()
+
+
+@router.post("/models/{model_id}/scenarios/{scenario_id}/compute")
+async def compute_model_scenario(
+    model_id: str,
+    scenario_id: str,
+    body: ScenarioComputeRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    await _require_model(model_id, db)
+    result = await db.execute(
+        select(Scenario).where(Scenario.id == scenario_id, Scenario.model_id == model_id)
+    )
+    scenario = result.scalar_one_or_none()
+    if scenario is None:
+        raise HTTPException(status_code=404, detail="Scenario not found")
+    fact_result = await db.execute(
+        select(Dataset).where(
+            Dataset.id == body.fact_dataset_id,
+            Dataset.model_id == model_id,
+            Dataset.status != "deleted",
+        )
+    )
+    fact_ds = fact_result.scalar_one_or_none()
+    if fact_ds is None:
+        raise HTTPException(status_code=404, detail="Fact dataset not found")
+    value_col: str = body.value_column or "amount"
+    baseline_df = await _build_baseline_df(fact_ds, body.relationships, db)
+    if value_col not in baseline_df.columns:
+        numeric_cols = [
+            c for c in baseline_df.columns
+            if baseline_df[c].dtype in (pl.Float32, pl.Float64, pl.Int32, pl.Int64)
+        ]
+        if not numeric_cols:
+            raise HTTPException(
+                status_code=422,
+                detail=f"value_column '{value_col}' not found and no numeric column available",
+            )
+        value_col = numeric_cols[0]
+    all_sc_result = await db.execute(
+        select(Scenario).where(
+            Scenario.dataset_id == scenario.dataset_id,
+            Scenario.model_id == model_id,
+        )
+    )
+    all_scenarios = {
+        s.id: {"rules": s.rules, "base_config": s.base_config}
+        for s in all_sc_result.scalars().all()
+    }
+    try:
+        scenario_df = scenario_svc.compute_scenario_output(
+            baseline_df, scenario.rules, scenario.base_config,
+            all_scenarios, value_col,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Scenario computation failed: {exc}") from exc
+
+    period_col = scenario_svc._find_period_col(scenario_df)
+    has_projection = "_data_source" in scenario_df.columns and "projected" in scenario_df["_data_source"].to_list()
+    actuals_periods: list[str] = []
+    projection_periods: list[str] = []
+    if period_col and "_data_source" in scenario_df.columns:
+        actuals_periods = sorted(
+            scenario_df.filter(pl.col("_data_source") == "actual")[period_col]
+            .cast(pl.Utf8).drop_nulls().unique().to_list()
+        )
+        projection_periods = sorted(
+            scenario_df.filter(pl.col("_data_source") == "projected")[period_col]
+            .cast(pl.Utf8).drop_nulls().unique().to_list()
+        )
+
+    def _rows(df: pl.DataFrame) -> list[list]:
+        return [[_json_safe(v) for v in row] for row in df.iter_rows()]
+
+    response: dict = {
+        "scenario_id": scenario_id,
+        "value_column": value_col,
+        "columns": scenario_df.columns,
+        "baseline": _rows(baseline_df),
+        "scenario": _rows(scenario_df),
+        "row_count": len(scenario_df),
+        "has_projection": has_projection,
+        "actuals_periods": actuals_periods,
+        "projection_periods": projection_periods,
+    }
+    if body.group_by:
+        response["variance"] = scenario_svc.compute_variance(
+            baseline_df, scenario_df, body.group_by, value_col
+        )
+    if body.breakdown_field:
+        response["waterfall"] = scenario_svc.compute_waterfall(
+            baseline_df, scenario_df, body.breakdown_field, value_col
+        )
+    return response
+
+
+@router.put("/models/{model_id}/knowledge/{entry_id}", response_model=KnowledgeEntryResponse)
+async def update_model_knowledge(
+    model_id: str,
+    entry_id: str,
+    body: KnowledgeEntryUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    await _require_model(model_id, db)
+    result = await db.execute(
+        select(KnowledgeEntry).where(
+            KnowledgeEntry.id == entry_id,
+            KnowledgeEntry.model_id == model_id,
+        )
+    )
+    entry = result.scalar_one_or_none()
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Knowledge entry not found")
+    if body.plain_text is not None:
+        entry.plain_text = body.plain_text
+    if body.content is not None:
+        entry.content = body.content
+    if body.confidence is not None:
+        entry.confidence = body.confidence
+    await db.commit()
+    await db.refresh(entry)
+    return KnowledgeEntryResponse.model_validate(entry)
+
+
+@router.delete("/models/{model_id}/knowledge/{entry_id}", status_code=204)
+async def delete_model_knowledge(model_id: str, entry_id: str, db: AsyncSession = Depends(get_db)):
+    await _require_model(model_id, db)
+    result = await db.execute(
+        select(KnowledgeEntry).where(
+            KnowledgeEntry.id == entry_id,
+            KnowledgeEntry.model_id == model_id,
+        )
+    )
+    entry = result.scalar_one_or_none()
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Knowledge entry not found")
+    await db.delete(entry)
+    await db.commit()
 
 
 # ---------------------------------------------------------------------------
