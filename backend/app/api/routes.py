@@ -738,6 +738,208 @@ async def list_model_datasets(model_id: str, db: AsyncSession = Depends(get_db))
     return [_schema_response(d) for d in result.scalars().all()]
 
 
+@router.post("/models/{model_id}/datasets/baseline", response_model=BaselineResponse)
+async def build_model_baseline(model_id: str, body: BaselineRequest, db: AsyncSession = Depends(get_db)):
+    """Build baseline for a dataset scoped to a model."""
+    result = await db.execute(
+        select(Dataset).where(
+            Dataset.id == body.fact_dataset_id,
+            Dataset.model_id == model_id,
+            Dataset.status != "deleted",
+        )
+    )
+    fact_ds = result.scalar_one_or_none()
+    if fact_ds is None:
+        raise HTTPException(status_code=404, detail="Fact dataset not found")
+    df = await _build_baseline_df(fact_ds, body.relationships, db)
+    col_names = df.columns
+    rows = [[_json_safe(v) for v in row] for row in df.iter_rows()]
+    return BaselineResponse(columns=col_names, data=rows, row_count=len(rows))
+
+
+@router.get("/models/{model_id}/relationships", response_model=list[DatasetRelationshipResponse])
+async def list_model_relationships(model_id: str, db: AsyncSession = Depends(get_db)):
+    """Return all relationships whose source dataset belongs to this model."""
+    result = await db.execute(
+        select(DatasetRelationship).where(DatasetRelationship.model_id == model_id)
+    )
+    return [DatasetRelationshipResponse.model_validate(r) for r in result.scalars().all()]
+
+
+@router.post("/models/{model_id}/relationships", response_model=DatasetRelationshipResponse, status_code=201)
+async def create_model_relationship(
+    model_id: str,
+    body: DatasetRelationshipCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a relationship scoped to a model."""
+    for ds_id in (body.source_dataset_id, body.target_dataset_id):
+        r = await db.execute(select(Dataset).where(Dataset.id == ds_id))
+        if r.scalar_one_or_none() is None:
+            raise HTTPException(status_code=404, detail=f"Dataset {ds_id} not found")
+
+    src_r = await db.execute(select(Dataset).where(Dataset.id == body.source_dataset_id))
+    tgt_r = await db.execute(select(Dataset).where(Dataset.id == body.target_dataset_id))
+    src_ds = src_r.scalar_one()
+    tgt_ds = tgt_r.scalar_one()
+
+    coverage_pct, overlap_count = _compute_coverage(
+        src_ds.table_name, body.source_column,
+        tgt_ds.table_name, body.target_column,
+    )
+
+    rel = DatasetRelationship(
+        id=uuid.uuid4().hex,
+        model_id=model_id,
+        source_dataset_id=body.source_dataset_id,
+        target_dataset_id=body.target_dataset_id,
+        source_column=body.source_column,
+        target_column=body.target_column,
+        coverage_pct=coverage_pct,
+        overlap_count=overlap_count,
+    )
+    db.add(rel)
+    await db.commit()
+    await db.refresh(rel)
+
+    try:
+        await _auto_populate_labels_from_relationship(db, rel)
+    except Exception as exc:
+        logger.warning("Auto-populate labels failed for rel %s: %s", rel.id, exc)
+
+    return DatasetRelationshipResponse.model_validate(rel)
+
+
+@router.get("/models/{model_id}/scenarios", response_model=list[ScenarioResponse])
+async def list_model_scenarios(model_id: str, db: AsyncSession = Depends(get_db)):
+    """List all scenarios in a model."""
+    result = await db.execute(
+        select(Scenario)
+        .where(Scenario.model_id == model_id)
+        .order_by(Scenario.created_at)
+    )
+    return [ScenarioResponse.model_validate(s) for s in result.scalars().all()]
+
+
+@router.post("/models/{model_id}/scenarios", response_model=ScenarioResponse, status_code=201)
+async def create_model_scenario(
+    model_id: str,
+    body: ScenarioCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a scenario scoped to a model."""
+    r = await db.execute(select(Dataset).where(Dataset.id == body.dataset_id))
+    if r.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    scenario = Scenario(
+        id=uuid.uuid4().hex,
+        model_id=model_id,
+        name=body.name,
+        dataset_id=body.dataset_id,
+        rules=body.rules,
+        color=body.color,
+        base_config=(
+            body.base_config.model_dump() if hasattr(body.base_config, "model_dump")
+            else body.base_config if isinstance(body.base_config, dict)
+            else None
+        ) if body.base_config else None,
+    )
+    db.add(scenario)
+    await db.commit()
+    await db.refresh(scenario)
+    return ScenarioResponse.model_validate(scenario)
+
+
+@router.get("/models/{model_id}/knowledge", response_model=list[KnowledgeEntryResponse])
+async def list_model_knowledge(model_id: str, db: AsyncSession = Depends(get_db)):
+    """List all knowledge entries for a model."""
+    result = await db.execute(
+        select(KnowledgeEntry)
+        .where(
+            (KnowledgeEntry.model_id == model_id) | (KnowledgeEntry.model_id.is_(None))
+        )
+        .where(KnowledgeEntry.confidence != "rejected")
+        .order_by(KnowledgeEntry.entry_type, KnowledgeEntry.created_at.desc())
+    )
+    return [KnowledgeEntryResponse.model_validate(e) for e in result.scalars().all()]
+
+
+@router.post("/models/{model_id}/knowledge", response_model=KnowledgeEntryResponse, status_code=201)
+async def create_model_knowledge(
+    model_id: str,
+    body: KnowledgeEntryCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a knowledge entry scoped to a model."""
+    entry = KnowledgeEntry(
+        id=uuid.uuid4().hex,
+        model_id=model_id,
+        dataset_id=body.dataset_id,
+        entry_type=body.entry_type,
+        plain_text=body.plain_text,
+        content=body.content,
+        confidence=body.confidence,
+        source=body.source,
+    )
+    db.add(entry)
+    await db.commit()
+    await db.refresh(entry)
+    return KnowledgeEntryResponse.model_validate(entry)
+
+
+@router.post("/models/{model_id}/chat")
+async def model_chat(model_id: str, request: ChatRequest, db: AsyncSession = Depends(get_db)):
+    """Stream chat scoped to a model — uses dataset within the model."""
+    from app.services.chat import stream_chat
+    from app.services.ai_context import build_agent_context
+
+    result = await db.execute(
+        select(Dataset)
+        .where(Dataset.id == request.dataset_id, Dataset.status != "deleted")
+        .options(selectinload(Dataset.columns))
+    )
+    dataset = result.scalar_one_or_none()
+    if dataset is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    if not settings.ANTHROPIC_API_KEY_CHAT:
+        raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY_CHAT is not configured")
+
+    all_rel_result = await db.execute(
+        select(DatasetRelationship).where(
+            (DatasetRelationship.source_dataset_id == dataset.id) |
+            (DatasetRelationship.target_dataset_id == dataset.id)
+        )
+    )
+    all_rels = all_rel_result.scalars().all()
+    related_ids = {dataset.id}
+    for r in all_rels:
+        related_ids.add(r.source_dataset_id)
+        related_ids.add(r.target_dataset_id)
+
+    context = await build_agent_context(list(related_ids), db)
+
+    all_rel_refs = [RelationshipRef(rel_id=r.id) for r in all_rels]
+    try:
+        baseline_df = await _build_baseline_df(dataset, all_rel_refs, db)
+    except Exception as exc:
+        logger.warning("Failed to build baseline for chat tools: %s", exc)
+        baseline_df = None
+
+    return StreamingResponse(
+        stream_chat(
+            message=request.message,
+            dataset_id=request.dataset_id,
+            history=request.conversation_history,
+            context=context,
+            baseline_df=baseline_df,
+            agent_mode=request.agent_mode,
+        ),
+        media_type="text/event-stream",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Upload
 # ---------------------------------------------------------------------------
@@ -1155,6 +1357,7 @@ async def create_relationship(
 
     rel = DatasetRelationship(
         id=uuid.uuid4().hex,
+        model_id=src_ds.model_id,
         source_dataset_id=body.source_dataset_id,
         target_dataset_id=body.target_dataset_id,
         source_column=body.source_column,

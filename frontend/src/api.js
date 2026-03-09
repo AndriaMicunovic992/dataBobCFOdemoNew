@@ -54,8 +54,9 @@ export async function uploadFile(file, modelId = null) {
 
 // ── Datasets ────────────────────────────────────────────────────────────────
 
-/** List all non-deleted datasets with columns + relationships. Returns list[SchemaResponse]. */
-export async function getDatasets() {
+/** List all non-deleted datasets in a model. */
+export async function getDatasets(modelId) {
+  if (modelId) return req(`/models/${modelId}/datasets`)
   return req('/datasets')
 }
 
@@ -81,24 +82,23 @@ export async function deleteDataset(datasetId) {
 
 /**
  * Build the enriched baseline by joining the fact table with dimension tables.
- * @param {string} factDatasetId
- * @param {string[]} relationshipIds  IDs of DatasetRelationship records to include
- * @returns {Promise<{columns: string[], data: any[][], row_count: number}>}
  */
-export async function getBaseline(factDatasetId, relationshipIds = []) {
-  return req('/datasets/baseline', {
-    method: 'POST',
-    ...json({
-      fact_dataset_id: factDatasetId,
-      relationships: relationshipIds.map((id) => ({ rel_id: id })),
-    }),
-  })
+export async function getBaseline(factDatasetId, relationshipIds = [], modelId = null) {
+  const body = {
+    fact_dataset_id: factDatasetId,
+    relationships: relationshipIds.map((id) => ({ rel_id: id })),
+  }
+  const path = modelId
+    ? `/models/${modelId}/datasets/baseline`
+    : '/datasets/baseline'
+  return req(path, { method: 'POST', ...json(body) })
 }
 
 // ── Relationships ────────────────────────────────────────────────────────────
 
-export async function createRelationship(body) {
-  return req('/relationships', { method: 'POST', ...json(body) })
+export async function createRelationship(body, modelId = null) {
+  const path = modelId ? `/models/${modelId}/relationships` : '/relationships'
+  return req(path, { method: 'POST', ...json(body) })
 }
 
 export async function updateRelationship(id, body) {
@@ -111,14 +111,16 @@ export async function deleteRelationship(id) {
 
 // ── Scenarios ────────────────────────────────────────────────────────────────
 
-/** List scenarios, optionally filtered by datasetId. */
-export async function getScenarios(datasetId) {
+/** List scenarios for a model. */
+export async function getScenarios(datasetId, modelId = null) {
+  if (modelId) return req(`/models/${modelId}/scenarios`)
   const qs = datasetId ? `?dataset_id=${datasetId}` : ''
   return req(`/scenarios${qs}`)
 }
 
-export async function createScenario(body) {
-  return req('/scenarios', { method: 'POST', ...json(body) })
+export async function createScenario(body, modelId = null) {
+  const path = modelId ? `/models/${modelId}/scenarios` : '/scenarios'
+  return req(path, { method: 'POST', ...json(body) })
 }
 
 export async function updateScenario(id, body) {
@@ -141,11 +143,13 @@ export async function computeScenario(scenarioId, factDatasetId, relationshipIds
 
 // ── Knowledge entries ─────────────────────────────────────────────────────────
 
-export async function getKnowledge(datasetId) {
+export async function getKnowledge(datasetId, modelId = null) {
+  if (modelId) return req(`/models/${modelId}/knowledge`)
   return req(`/datasets/${datasetId}/knowledge`)
 }
 
-export async function createKnowledge(datasetId, body) {
+export async function createKnowledge(datasetId, body, modelId = null) {
+  if (modelId) return req(`/models/${modelId}/knowledge`, { method: 'POST', ...json({ ...body, dataset_id: datasetId }) })
   return req(`/datasets/${datasetId}/knowledge`, { method: 'POST', ...json(body) })
 }
 
@@ -162,17 +166,10 @@ export async function deleteKnowledge(entryId) {
 /**
  * Stream a chat response from the AI.
  * Yields typed event objects until {type:'done'}.
- *
- * Event shapes:
- *   {type:'text_delta', text:'...'}
- *   {type:'tool_executing', tool:'query_data', input:{...}}
- *   {type:'tool_result', tool:'query_data', result:{...}}
- *   {type:'scenario_rule', rule:{...}}
- *   {type:'done'}
- *   {type:'error', message:'...'}
  */
-export async function* streamChat(message, datasetId, history = [], signal, agentMode = "scenario") {
-  const res = await fetch(`${BASE}/chat`, {
+export async function* streamChat(message, datasetId, history = [], signal, agentMode = "scenario", modelId = null) {
+  const path = modelId ? `/models/${modelId}/chat` : '/chat'
+  const res = await fetch(`${BASE}${path}`, {
     method: 'POST',
     signal,
     ...json({
