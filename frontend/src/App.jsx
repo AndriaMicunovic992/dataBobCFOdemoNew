@@ -3170,7 +3170,7 @@ function FlowCard({ step }) {
       borderRadius: 12,
       padding: "18px 20px",
       width: 185,
-      minHeight: 170,
+      minHeight: 150,
       border: "1px solid rgba(255,255,255,0.4)",
       boxShadow: "0 1px 3px rgba(0,0,0,0.03)",
       display: "flex",
@@ -3266,7 +3266,7 @@ function ModelLandingPage({ models, loading, onSelect, onRefresh, onShowHowItWor
       {showTechDetails && <TechDetailsModal onClose={() => setShowTechDetails(false)} />}
 
       {/* ── HERO + FLOW ── */}
-      <div style={{ background: "linear-gradient(160deg, #f0f9fd 0%, #ffffff 40%, #f8f9fb 100%)", padding: "44px 32px 40px", borderBottom: "1px solid #eef0f2", position: "relative", overflow: "hidden" }}>
+      <div style={{ background: "linear-gradient(160deg, #f0f9fd 0%, #ffffff 40%, #f8f9fb 100%)", padding: "28px 32px 24px", borderBottom: "1px solid #eef0f2", position: "relative", overflow: "hidden" }}>
         {/* Background logo — large, centered, faded */}
         <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none", zIndex: 0 }}>
           <img
@@ -3281,7 +3281,7 @@ function ModelLandingPage({ models, loading, onSelect, onRefresh, onShowHowItWor
             Each model is an independent workspace with its own data, scenarios, and AI-learned knowledge. Here's how it works:
           </p>
           {/* ── Flow steps — U-shape around logo ── */}
-          <div style={{ marginTop: 32, display: "flex", flexDirection: "column", alignItems: "center", gap: 16 }}>
+          <div style={{ marginTop: 20, display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
             {/* Top row: 3 cards */}
             <div style={{ display: "flex", justifyContent: "center", gap: 12, width: "100%" }}>
               {FLOW_STEPS.slice(0, 3).map((step, i) => (
@@ -3313,7 +3313,7 @@ function ModelLandingPage({ models, loading, onSelect, onRefresh, onShowHowItWor
         {loading && models.length === 0 && (
           <div style={{ textAlign: "center", padding: 60, color: "#9ca3af", fontSize: 13 }}>Loading models...</div>
         )}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 20, justifyItems: "stretch" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 20, alignItems: "start" }}>
           {models.map(m => {
             const isHovered = hoveredId === m.id;
             const isEditing = editingId === m.id;
