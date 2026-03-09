@@ -2862,10 +2862,7 @@ function UploadScreen({ onUploaded }) {
     <div style={{ height: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: C.bg, fontFamily: "'Plus Jakarta Sans', sans-serif" }}>
       <link href={FONT_URL} rel="stylesheet" />
       <div style={{ marginBottom: 20, display: "flex", alignItems: "center", gap: 10 }}>
-        <div style={{ width: 36, height: 36, borderRadius: 10, background: `linear-gradient(135deg, ${C.brand}, ${C.brandDark})`, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <span style={{ color: "#fff", fontSize: 17, fontWeight: 800 }}>d</span>
-        </div>
-        <span style={{ fontSize: 22, fontWeight: 800, color: C.text }}>data<span style={{ color: C.brand }}>Bob</span>IQ</span>
+        <img src="/IQLogo.png" alt="dataBobIQ" style={{ height: 40, objectFit: "contain" }} />
       </div>
 
       <div
@@ -2950,9 +2947,7 @@ function ModelLandingPage({ models, loading, onSelect, onRefresh, onShowHowItWor
       <link href={FONT_URL} rel="stylesheet" />
       {/* ── TOP BAR ── */}
       <div style={{ background: "#fff", borderBottom: "1px solid #eef0f2", padding: "14px 32px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <span style={{ fontSize: 20, fontWeight: 800, color: "#1a1a2e", letterSpacing: "-0.5px" }}>
-          data<span style={{ color: C.brand }}>Bob</span>IQ
-        </span>
+        <img src="/IQLogo.png" alt="dataBobIQ" style={{ height: 40, objectFit: "contain" }} />
         <button onClick={onShowHowItWorks}
           onMouseEnter={e => { e.currentTarget.style.borderColor = C.brand; e.currentTarget.style.color = C.brand; }}
           onMouseLeave={e => { e.currentTarget.style.borderColor = "#e0e3e8"; e.currentTarget.style.color = "#4b5563"; }}
@@ -3524,12 +3519,7 @@ export default function App() {
 
       <div style={{ padding: "0 24px", height: 56, borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "space-between", background: C.white, flexShrink: 0 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <div style={{ width: 28, height: 28, borderRadius: 8, background: `linear-gradient(135deg, ${C.brand}, ${C.brandDark})`, display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <span style={{ color: "#fff", fontSize: 13, fontWeight: 800 }}>d</span>
-          </div>
-          <span style={{ fontSize: 17, fontWeight: 800, color: C.text, letterSpacing: "-0.3px" }}>
-            data<span style={{ color: C.brand }}>Bob</span>IQ
-          </span>
+          <img src="/IQLogo.png" alt="dataBobIQ" style={{ height: 30, objectFit: "contain" }} />
           <button onClick={handleBackToModels}
             onMouseEnter={e => e.currentTarget.style.background = "#f0f9fd"}
             onMouseLeave={e => e.currentTarget.style.background = "none"}
