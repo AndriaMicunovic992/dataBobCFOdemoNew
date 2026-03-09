@@ -2893,10 +2893,17 @@ function UploadScreen({ onUploaded }) {
   }
 
   return (
-    <div style={{ height: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: C.bg, fontFamily: "'Plus Jakarta Sans', sans-serif" }}>
+    <div style={{ height: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: C.bg, fontFamily: "'Plus Jakarta Sans', sans-serif", position: "relative", overflow: "hidden" }}>
       <link href={FONT_URL} rel="stylesheet" />
+      {/* Background logo */}
+      <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none", zIndex: 0 }}>
+        <img src="/IQLogo.png" alt="" style={{ height: "110%", maxWidth: "none", objectFit: "contain", opacity: 0.08, userSelect: "none" }} />
+      </div>
+      <div style={{ position: "relative", zIndex: 1, display: "flex", flexDirection: "column", alignItems: "center" }}>
       <div style={{ marginBottom: 20, display: "flex", alignItems: "center", gap: 10 }}>
-        <img src="/IQLogo.png" alt="dataBobIQ" style={{ height: 40, objectFit: "contain" }} />
+        <span style={{ fontSize: 20, fontWeight: 800, color: "#1a1a2e", letterSpacing: "-0.5px" }}>
+          data<span style={{ color: "#6abbd9" }}>Bob</span>IQ
+        </span>
       </div>
 
       <div
@@ -2920,6 +2927,7 @@ function UploadScreen({ onUploaded }) {
           Supports .xlsx · .xls · .csv · .tsv
         </div>
         {error && <div style={{ marginTop: 14, color: C.red, fontSize: 12 }}>{error}</div>}
+      </div>
       </div>
     </div>
   );
@@ -3313,7 +3321,7 @@ function ModelLandingPage({ models, loading, onSelect, onRefresh, onShowHowItWor
         {loading && models.length === 0 && (
           <div style={{ textAlign: "center", padding: 60, color: "#9ca3af", fontSize: 13 }}>Loading models...</div>
         )}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 20, alignItems: "start" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 20 }}>
           {models.map(m => {
             const isHovered = hoveredId === m.id;
             const isEditing = editingId === m.id;
@@ -3323,7 +3331,7 @@ function ModelLandingPage({ models, loading, onSelect, onRefresh, onShowHowItWor
                 onMouseEnter={() => setHoveredId(m.id)}
                 onMouseLeave={() => setHoveredId(null)}
                 onClick={() => { if (!isEditing && !isMenuOpen) onSelect(m.id, m.name); }}
-                style={{ background: "#fff", borderRadius: 14, padding: 24, border: `1.5px solid ${isHovered ? C.brand : "#e8ebee"}`, cursor: isEditing ? "default" : "pointer", transition: "all 0.2s ease", boxShadow: isHovered ? `0 8px 24px ${C.brand}1e` : "0 1px 3px rgba(0,0,0,0.04)", position: "relative", minHeight: 160, display: "flex", flexDirection: "column" }}>
+                style={{ background: "#fff", borderRadius: 14, padding: 24, border: `1.5px solid ${isHovered ? C.brand : "#e8ebee"}`, cursor: isEditing ? "default" : "pointer", transition: "all 0.2s ease", boxShadow: isHovered ? `0 8px 24px ${C.brand}1e` : "0 1px 3px rgba(0,0,0,0.04)", position: "relative", minHeight: 160, height: "100%", display: "flex", flexDirection: "column" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
                   {isEditing ? (
                     <input value={editName} onChange={e => setEditName(e.target.value)}
@@ -3397,7 +3405,7 @@ function ModelLandingPage({ models, loading, onSelect, onRefresh, onShowHowItWor
                 e.currentTarget.querySelector(".plus-icon").style.background = "#f0f9fd";
                 e.currentTarget.querySelector(".plus-icon").style.color = C.brand;
               }}
-              style={{ background: "#fafbfc", borderRadius: 14, border: "2px dashed #dde0e4", cursor: "pointer", minHeight: 160, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8, color: "#9ca3af", transition: "all 0.2s ease" }}>
+              style={{ background: "#fafbfc", borderRadius: 14, border: "2px dashed #dde0e4", cursor: "pointer", minHeight: 160, height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8, color: "#9ca3af", transition: "all 0.2s ease" }}>
               <div className="plus-icon" style={{ width: 44, height: 44, borderRadius: 12, background: "#f0f9fd", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, color: C.brand, transition: "all 0.2s ease" }}>+</div>
               <span style={{ fontSize: 14, fontWeight: 600 }}>New Model</span>
             </div>
@@ -3848,7 +3856,7 @@ export default function App() {
 
       <div style={{ padding: "0 24px", height: 56, borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "space-between", background: C.white, flexShrink: 0 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <img src="/IQLogo.png" alt="dataBobIQ" style={{ height: 30, objectFit: "contain" }} />
+          <span style={{ fontSize: 20, fontWeight: 800, color: "#1a1a2e", letterSpacing: "-0.5px" }}>data<span style={{ color: "#6abbd9" }}>Bob</span>IQ</span>
           <button onClick={handleBackToModels}
             onMouseEnter={e => e.currentTarget.style.background = "#f0f9fd"}
             onMouseLeave={e => e.currentTarget.style.background = "none"}
