@@ -2991,8 +2991,16 @@ function ModelLandingPage({ models, loading, onSelect, onRefresh, onShowHowItWor
       </div>
 
       {/* ── HERO + FLOW ── */}
-      <div style={{ background: "linear-gradient(160deg, #f0f9fd 0%, #ffffff 40%, #f8f9fb 100%)", padding: "44px 32px 40px", borderBottom: "1px solid #eef0f2" }}>
-        <div style={{ maxWidth: 960, margin: "0 auto" }}>
+      <div style={{ background: "linear-gradient(160deg, #f0f9fd 0%, #ffffff 40%, #f8f9fb 100%)", padding: "44px 32px 40px", borderBottom: "1px solid #eef0f2", position: "relative", overflow: "hidden" }}>
+        {/* Background logo — large, centered, faded */}
+        <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none", zIndex: 0 }}>
+          <img
+            src="/IQLogo.png"
+            alt=""
+            style={{ height: "110%", maxWidth: "none", objectFit: "contain", opacity: 0.06, userSelect: "none" }}
+          />
+        </div>
+        <div style={{ position: "relative", zIndex: 1, maxWidth: 960, margin: "0 auto" }}>
           <h1 style={{ fontSize: 28, fontWeight: 800, color: "#1a1a2e", margin: 0, letterSpacing: "-0.5px" }}>Your Models</h1>
           <p style={{ fontSize: 14, color: "#6b7280", marginTop: 6, lineHeight: 1.5, maxWidth: 560 }}>
             Each model is an independent workspace with its own data, scenarios, and AI-learned knowledge. Here's how it works:
