@@ -8,6 +8,7 @@ Route order matters for path-parameter disambiguation:
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
 import logging
 import uuid
@@ -752,9 +753,13 @@ async def list_model_datasets(model_id: str, db: AsyncSession = Depends(get_db))
     return [_schema_response(d) for d in result.scalars().all()]
 
 
-@router.post("/models/{model_id}/datasets/baseline", response_model=BaselineResponse)
+@router.post("/models/{model_id}/datasets/baseline")
 async def build_model_baseline(model_id: str, body: BaselineRequest, db: AsyncSession = Depends(get_db)):
-    """Build baseline for a dataset scoped to a model."""
+    """Build baseline for a dataset scoped to a model.
+
+    Streams the response as JSON to avoid holding a Python list + serialised
+    string in memory simultaneously with the Polars DataFrame.
+    """
     result = await db.execute(
         select(Dataset).where(
             Dataset.id == body.fact_dataset_id,
@@ -767,8 +772,23 @@ async def build_model_baseline(model_id: str, body: BaselineRequest, db: AsyncSe
         raise HTTPException(status_code=404, detail="Fact dataset not found")
     df = await _build_baseline_df(fact_ds, body.relationships, db)
     col_names = df.columns
-    rows = [[_json_safe(v) for v in row] for row in df.iter_rows()]
-    return BaselineResponse(columns=col_names, data=rows, row_count=len(rows))
+    row_count = df.height
+
+    async def _stream():
+        try:
+            yield '{"columns":' + json.dumps(col_names) + ',"data":['
+            first = True
+            for row in df.iter_rows():
+                if not first:
+                    yield ","
+                yield json.dumps([_json_safe(v) for v in row])
+                first = False
+            yield '],"row_count":' + str(row_count) + "}"
+        finally:
+            del df
+            gc.collect()
+
+    return StreamingResponse(_stream(), media_type="application/json")
 
 
 @router.get("/models/{model_id}/relationships", response_model=list[DatasetRelationshipResponse])
@@ -1116,6 +1136,9 @@ async def upload_file(
         if settings.ANTHROPIC_API_KEY_AGENT:
             background_tasks.add_task(_run_agent_and_persist, ds.id)
 
+    # Release DataFrames held during upload before returning
+    sheet_dfs.clear()
+    gc.collect()
     return responses
 
 
@@ -1569,12 +1592,12 @@ async def get_available_periods(dataset_id: str, db: AsyncSession = Depends(get_
         return {"periods": [], "years": [], "period_column": None}
 
 
-@router.post("/datasets/baseline", response_model=BaselineResponse)
+@router.post("/datasets/baseline")
 async def build_baseline(body: BaselineRequest, db: AsyncSession = Depends(get_db)):
     """Build the enriched baseline by joining a fact table with dimension tables.
 
-    Returns the flat, joined result as JSON rows ready for the frontend chart
-    engine.  Complex transforms happen in Polars — SQL stays simple.
+    Streams the response as JSON to avoid holding a Python list + serialised
+    string in memory simultaneously with the Polars DataFrame.
     """
     result = await db.execute(
         select(Dataset).where(
@@ -1587,10 +1610,24 @@ async def build_baseline(body: BaselineRequest, db: AsyncSession = Depends(get_d
         raise HTTPException(status_code=404, detail="Fact dataset not found")
 
     df = await _build_baseline_df(fact_ds, body.relationships, db)
-
     col_names = df.columns
-    rows = [[_json_safe(v) for v in row] for row in df.iter_rows()]
-    return BaselineResponse(columns=col_names, data=rows, row_count=len(rows))
+    row_count = df.height
+
+    async def _stream():
+        try:
+            yield '{"columns":' + json.dumps(col_names) + ',"data":['
+            first = True
+            for row in df.iter_rows():
+                if not first:
+                    yield ","
+                yield json.dumps([_json_safe(v) for v in row])
+                first = False
+            yield '],"row_count":' + str(row_count) + "}"
+        finally:
+            del df
+            gc.collect()
+
+    return StreamingResponse(_stream(), media_type="application/json")
 
 
 # ---------------------------------------------------------------------------
