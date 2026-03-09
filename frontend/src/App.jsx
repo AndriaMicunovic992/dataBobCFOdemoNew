@@ -1001,7 +1001,7 @@ function KnowledgeEditModal({ entry, onSave, onClose }) {
   );
 }
 
-function AddKnowledgeModal({ datasetId, onSaved, onClose }) {
+function AddKnowledgeModal({ datasetId, onSaved, onClose, modelId = null }) {
   const [entryType, setEntryType] = useState("relationship");
   const [plainText, setPlainText] = useState("");
   const [contentJson, setContentJson] = useState(JSON.stringify(KNOWLEDGE_CONTENT_TEMPLATES.relationship, null, 2));
@@ -1022,7 +1022,7 @@ function AddKnowledgeModal({ datasetId, onSaved, onClose }) {
       const created = await createKnowledge(datasetId, {
         entry_type: entryType, content, plain_text: plainText,
         source: "user_manual", confidence: "confirmed",
-      });
+      }, modelId);
       onSaved(created);
       onClose();
     } catch (e) {
@@ -1062,7 +1062,7 @@ function AddKnowledgeModal({ datasetId, onSaved, onClose }) {
   );
 }
 
-function KnowledgePanel({ datasetId, knowledgeRefreshKey }) {
+function KnowledgePanel({ datasetId, knowledgeRefreshKey, modelId = null }) {
   const [entries, setEntries] = useState([]);
   const [loading, setLoading] = useState(false);
   const [editingEntry, setEditingEntry] = useState(null);
@@ -1071,11 +1071,11 @@ function KnowledgePanel({ datasetId, knowledgeRefreshKey }) {
   useEffect(() => {
     if (!datasetId) return;
     setLoading(true);
-    getKnowledge(datasetId)
+    getKnowledge(datasetId, modelId)
       .then(setEntries)
       .catch(console.error)
       .finally(() => setLoading(false));
-  }, [datasetId, knowledgeRefreshKey]);
+  }, [datasetId, knowledgeRefreshKey, modelId]);
 
   async function handleConfirm(id) {
     try {
@@ -1116,6 +1116,7 @@ function KnowledgePanel({ datasetId, knowledgeRefreshKey }) {
           datasetId={datasetId}
           onSaved={created => setEntries(p => [created, ...p])}
           onClose={() => setAddOpen(false)}
+          modelId={modelId}
         />
       )}
       {editingEntry && (
@@ -1158,7 +1159,7 @@ function KnowledgePanel({ datasetId, knowledgeRefreshKey }) {
   );
 }
 
-function SchemaView({ schema, setSchema, relationships, setRelationships, onOpenUpload, factDatasetId, knowledgeRefreshKey }) {
+function SchemaView({ schema, setSchema, relationships, setRelationships, onOpenUpload, factDatasetId, knowledgeRefreshKey, modelId = null }) {
   const [addRelOpen, setAddRelOpen] = useState(false);
   const [newRel, setNewRel] = useState({ from: "", to: "", fromCol: "", toCol: "" });
   const [dismissedSuggestions, setDismissedSuggestions] = useState(new Set());
@@ -1327,56 +1328,75 @@ function SchemaView({ schema, setSchema, relationships, setRelationships, onOpen
       {/* Tables */}
       <div style={{ display: "flex", gap: 14, overflowX: "auto", paddingBottom: 8, alignItems: "flex-start" }}>
         {Object.entries(schema).map(([name, info]) => (
-          <div key={name} style={{ ...S.card, borderColor: info.isFact ? C.brand + "44" : C.border, flex: "0 0 320px", width: 320 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-              <span style={{ fontSize: 15, fontWeight: 700, color: C.text }}>{name}</span>
-              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                {info.aiAnalyzing && (
-                  <span style={{ ...S.badge(C.amber), fontSize: 9, animation: "pulse 1.5s infinite" }}>⏳ Analyzing…</span>
-                )}
-                <span style={S.badge(
-                  info.aiNotes?.is_system ? C.green :
-                  info.isFact ? C.brand : C.purple
-                )}>
-                  {info.aiNotes?.is_system ? "CALENDAR" : info.isFact ? "FACT" : "DIMENSION"}
-                </span>
+          <div key={name} style={{
+            background: C.white,
+            border: `1px solid ${info.isFact ? C.brand + "44" : C.border}`,
+            borderRadius: 12,
+            flex: "0 0 320px",
+            width: 320,
+            boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
+            display: "flex",
+            flexDirection: "column",
+            maxHeight: 380,
+            overflow: "hidden",
+          }}>
+            {/* Card header — fixed, doesn't scroll */}
+            <div style={{ padding: "14px 16px 10px", borderBottom: `1px solid ${C.borderLight}`, flexShrink: 0 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                <span style={{ fontSize: 15, fontWeight: 700, color: C.text }}>{name}</span>
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  {info.aiAnalyzing && (
+                    <span style={{ ...S.badge(C.amber), fontSize: 9, animation: "pulse 1.5s infinite" }}>⏳ Analyzing…</span>
+                  )}
+                  <span style={S.badge(
+                    info.aiNotes?.is_system ? C.green :
+                    info.isFact ? C.brand : C.purple
+                  )}>
+                    {info.aiNotes?.is_system ? "CALENDAR" : info.isFact ? "FACT" : "DIMENSION"}
+                  </span>
+                </div>
               </div>
+              {info.aiNotes?.description && (
+                <div style={{ fontSize: 11, color: C.textSec, fontStyle: "italic", lineHeight: 1.4, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+                  {info.aiNotes.description}
+                </div>
+              )}
+              <div style={{ fontSize: 11, color: C.textMuted, marginTop: 4 }}>{info.rowCount} rows</div>
             </div>
-            {info.aiNotes?.description && (
-              <div style={{ fontSize: 11, color: C.textSec, marginBottom: 6, fontStyle: "italic" }}>{info.aiNotes.description}</div>
-            )}
-            <div style={{ fontSize: 12, color: C.textMuted, marginBottom: 10 }}>{info.rowCount} rows</div>
-            <table style={{ width: "100%", borderCollapse: "collapse" }}>
-              <thead><tr>
-                <th style={{ ...S.th, width: "45%" }}>Column</th>
-                <th style={{ ...S.th, width: "40%" }}>Role</th>
-                <th style={{ ...S.th, width: "15%", textAlign: "right" }}>Uniq</th>
-              </tr></thead>
-              <tbody>{info.columns.map(col => (
-                <tr key={col.name}>
-                  <td style={{ ...S.td, ...S.mono, fontSize: 11, wordBreak: "break-word", maxWidth: 130 }}>{col.name}</td>
-                  <td style={S.td}>
-                    <select value={col.role} onChange={e => changeRole(name, col.name, e.target.value)}
-                      style={{ ...S.select, padding: "2px 8px", fontSize: 10, background: ROLE_COLORS[col.role] + "12", color: ROLE_COLORS[col.role], border: `1px solid ${ROLE_COLORS[col.role]}30`, borderRadius: 20, fontWeight: 600 }}>
-                      {ROLE_OPTIONS.map(r => <option key={r} value={r}>{r.toUpperCase()}</option>)}
-                    </select>
-                    {col.aiSuggestion?.reasoning && col.aiSuggestion.suggested_role !== col.role && (
-                      <div title={col.aiSuggestion.reasoning} style={{ fontSize: 9, color: C.amber, cursor: "help", marginTop: 2 }}>
-                        AI: {col.aiSuggestion.suggested_role} ⓘ
-                      </div>
-                    )}
-                  </td>
-                  <td style={{ ...S.td, color: C.textMuted, fontSize: 11, textAlign: "right" }}>{col.uniqueCount}</td>
-                </tr>
-              ))}</tbody>
-            </table>
+            {/* Column list — scrollable */}
+            <div style={{ flex: 1, overflowY: "auto", padding: "0 0 8px" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead><tr>
+                  <th style={{ ...S.th, width: "45%", padding: "8px 16px", position: "sticky", top: 0 }}>Column</th>
+                  <th style={{ ...S.th, width: "40%", padding: "8px 8px", position: "sticky", top: 0 }}>Role</th>
+                  <th style={{ ...S.th, width: "15%", textAlign: "right", padding: "8px 16px 8px 0", position: "sticky", top: 0 }}>Uniq</th>
+                </tr></thead>
+                <tbody>{info.columns.map(col => (
+                  <tr key={col.name}>
+                    <td style={{ ...S.td, ...S.mono, fontSize: 11, wordBreak: "break-word", maxWidth: 130, padding: "6px 16px" }}>{col.name}</td>
+                    <td style={{ ...S.td, padding: "6px 8px" }}>
+                      <select value={col.role} onChange={e => changeRole(name, col.name, e.target.value)}
+                        style={{ ...S.select, padding: "2px 8px", fontSize: 10, background: ROLE_COLORS[col.role] + "12", color: ROLE_COLORS[col.role], border: `1px solid ${ROLE_COLORS[col.role]}30`, borderRadius: 20, fontWeight: 600 }}>
+                        {ROLE_OPTIONS.map(r => <option key={r} value={r}>{r.toUpperCase()}</option>)}
+                      </select>
+                      {col.aiSuggestion?.reasoning && col.aiSuggestion.suggested_role !== col.role && (
+                        <div title={col.aiSuggestion.reasoning} style={{ fontSize: 9, color: C.amber, cursor: "help", marginTop: 2 }}>
+                          AI: {col.aiSuggestion.suggested_role} ⓘ
+                        </div>
+                      )}
+                    </td>
+                    <td style={{ ...S.td, color: C.textMuted, fontSize: 11, textAlign: "right", padding: "6px 16px 6px 0" }}>{col.uniqueCount}</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
           </div>
         ))}
       </div>
 
       {/* Knowledge base panel — shown when a fact dataset is selected */}
       {factDatasetId && (
-        <KnowledgePanel datasetId={factDatasetId} knowledgeRefreshKey={knowledgeRefreshKey} />
+        <KnowledgePanel datasetId={factDatasetId} knowledgeRefreshKey={knowledgeRefreshKey} modelId={modelId} />
       )}
     </div>
   );
@@ -1574,7 +1594,7 @@ function mergeWithCalendar(dataVals, field) {
   return [...new Set([...dataVals, ...calVals])].sort();
 }
 
-function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetId, relIds }) {
+function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetId, relIds, modelId = null }) {
   const dims = useMemo(() => getDimFields(baseline), [baseline]);
   const measures = useMemo(() => getMeasureFields(baseline, schema), [baseline, schema]);
   const basePeriods = useMemo(() => getUniq(baseline, "_period"), [baseline]);
@@ -1787,7 +1807,7 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
     const color = SC_COLORS[scenarios.length % SC_COLORS.length];
     const name = `Scenario ${scenarios.length + 1}`;
     try {
-      const created = await createScenario({ name, dataset_id: factDatasetId, rules: [], color });
+      const created = await createScenario({ name, dataset_id: factDatasetId, rules: [], color }, modelId);
       setScenarios(p => [...p, { id: created.id, name: created.name, rules: created.rules || [], color: created.color || color, base_config: created.base_config || null }]);
       setEditId(created.id); setActive(p => new Set([...p, created.id]));
     } catch {
@@ -2390,7 +2410,7 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
 // ═══════════════════════════════════════════════════════════════
 // CHAT PANEL
 // ═══════════════════════════════════════════════════════════════
-function ChatPanel({ baseline, scenarios, setScenarios, setActiveTab, activeTab, datasetId, onKnowledgeSaved, pendingOnboardingId, onOnboardingConsumed }) {
+function ChatPanel({ baseline, scenarios, setScenarios, setActiveTab, activeTab, datasetId, onKnowledgeSaved, pendingOnboardingId, onOnboardingConsumed, modelId = null }) {
   const [dataModelMessages, setDataModelMessages] = useState([
     { role: "assistant", content: "I'm the **Data Understanding Agent**. I can help you document relationships, calculations, definitions, and business rules about your data." }
   ]);
@@ -2449,7 +2469,7 @@ function ChatPanel({ baseline, scenarios, setScenarios, setActiveTab, activeTab,
     let pendingScenarioName = null;
 
     try {
-      for await (const event of streamChat(msg, datasetId, history, abortCtrl.signal, targetAgentMode)) {
+      for await (const event of streamChat(msg, datasetId, history, abortCtrl.signal, targetAgentMode, modelId)) {
         if (event.type === "text_delta") {
           setTargetMessages(p => {
             const next = [...p];
@@ -2510,7 +2530,7 @@ function ChatPanel({ baseline, scenarios, setScenarios, setActiveTab, activeTab,
                 };
               }
               try {
-                const created = await createScenario(payload);
+                const created = await createScenario(payload, modelId);
                 setScenarios(prev => [...prev, {
                   id: created.id, name: created.name,
                   rules: created.rules || pendingRules,
@@ -3324,10 +3344,19 @@ export default function App() {
     }
   }, [models]);
 
+  // ── Reset model-scoped state when switching models ──────────────
+  const handleBackToModels = () => {
+    setCurrentModelId(null);
+    setCurrentModelName("");
+    setScenarios([]);
+    setSchema({});
+    setRelationships([]);
+  };
+
   // ── Load datasets from API ──────────────────────────────────────
   const { data: schemaList = [], isLoading } = useQuery({
     queryKey: ["datasets", currentModelId],
-    queryFn: getDatasets,
+    queryFn: () => getDatasets(currentModelId),
     staleTime: 30_000,
     enabled: !!currentModelId,
     refetchInterval: (query) => {
@@ -3371,8 +3400,8 @@ export default function App() {
 
   // ── Scenarios from API ──────────────────────────────────────────
   const { data: apiScenarios = [] } = useQuery({
-    queryKey: ["scenarios", factDataset?.dataset.id],
-    queryFn: () => getScenarios(factDataset.dataset.id),
+    queryKey: ["scenarios", currentModelId],
+    queryFn: () => getScenarios(factDataset.dataset.id, currentModelId),
     enabled: !!factDataset?.dataset.id,
     staleTime: 30_000,
   });
@@ -3397,8 +3426,8 @@ export default function App() {
   // ── Baseline from API ───────────────────────────────────────────
   const relIds = useMemo(() => relationships.map(r => r.id), [relationships]);
   const { data: apiBaseline } = useQuery({
-    queryKey: ["baseline", factDataset?.dataset.id, relIds],
-    queryFn: () => getBaseline(factDataset.dataset.id, relIds),
+    queryKey: ["baseline", factDataset?.dataset.id, relIds, currentModelId],
+    queryFn: () => getBaseline(factDataset.dataset.id, relIds, currentModelId),
     enabled: !!factDataset?.dataset.id,
     staleTime: 30_000,
   });
@@ -3431,7 +3460,7 @@ export default function App() {
       // Deleted
       for (const r of prev) {
         if (!nextIds.has(r.id)) {
-          apiDeleteRelationship(r.id).then(() => queryClient.invalidateQueries({ queryKey: ["datasets"] })).catch(console.error);
+          apiDeleteRelationship(r.id).then(() => queryClient.invalidateQueries({ queryKey: ["datasets", currentModelId] })).catch(console.error);
         }
       }
       // Added (local temp ID = string like "gl_entries-accounts-…")
@@ -3440,8 +3469,8 @@ export default function App() {
           const srcId = dsNameToId[r.from];
           const tgtId = dsNameToId[r.to];
           if (srcId && tgtId) {
-            apiCreateRelationship({ source_dataset_id: srcId, target_dataset_id: tgtId, source_column: r.fromCol, target_column: r.toCol })
-              .then(() => queryClient.invalidateQueries({ queryKey: ["datasets"] }))
+            apiCreateRelationship({ source_dataset_id: srcId, target_dataset_id: tgtId, source_column: r.fromCol, target_column: r.toCol }, currentModelId)
+              .then(() => queryClient.invalidateQueries({ queryKey: ["datasets", currentModelId] }))
               .catch(console.error);
           }
         }
@@ -3452,7 +3481,7 @@ export default function App() {
           const p = prev.find(x => x.id === r.id);
           if (p && (p.fromCol !== r.fromCol || p.toCol !== r.toCol)) {
             apiUpdateRelationship(r.id, { source_column: r.fromCol, target_column: r.toCol })
-              .then(() => queryClient.invalidateQueries({ queryKey: ["datasets"] }))
+              .then(() => queryClient.invalidateQueries({ queryKey: ["datasets", currentModelId] }))
               .catch(console.error);
           }
         }
@@ -3535,7 +3564,7 @@ export default function App() {
           <span style={{ fontSize: 17, fontWeight: 800, color: C.text, letterSpacing: "-0.3px" }}>
             data<span style={{ color: C.brand }}>Bob</span>IQ
           </span>
-          <button onClick={() => setCurrentModelId(null)}
+          <button onClick={handleBackToModels}
             onMouseEnter={e => e.currentTarget.style.background = "#f0f9fd"}
             onMouseLeave={e => e.currentTarget.style.background = "none"}
             style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, color: C.brand, fontWeight: 600, display: "flex", alignItems: "center", gap: 4, padding: "4px 8px", borderRadius: 6, marginLeft: 4 }}>
@@ -3575,11 +3604,11 @@ export default function App() {
 
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
         <div style={{ flex: 1, overflow: "auto", padding: 24 }}>
-          {tab === "schema" && <SchemaView schema={schema} setSchema={handleSetSchema} relationships={relationships} setRelationships={handleSetRelationships} onOpenUpload={() => setUploadOpen(true)} factDatasetId={factDataset?.dataset.id} knowledgeRefreshKey={knowledgeRefreshKey} />}
+          {tab === "schema" && <SchemaView schema={schema} setSchema={handleSetSchema} relationships={relationships} setRelationships={handleSetRelationships} onOpenUpload={() => setUploadOpen(true)} factDatasetId={factDataset?.dataset.id} knowledgeRefreshKey={knowledgeRefreshKey} modelId={currentModelId} />}
           {tab === "actuals" && <ActualsView baseline={baseline} schema={schema} />}
-          {tab === "scenarios" && <ScenariosView baseline={baseline} scenarios={scenarios} setScenarios={handleSetScenarios} schema={schema} factDatasetId={factDataset?.dataset.id} relIds={relIds} />}
+          {tab === "scenarios" && <ScenariosView baseline={baseline} scenarios={scenarios} setScenarios={handleSetScenarios} schema={schema} factDatasetId={factDataset?.dataset.id} relIds={relIds} modelId={currentModelId} />}
         </div>
-        <ChatPanel baseline={baseline} scenarios={scenarios} setScenarios={handleSetScenarios} setActiveTab={setTab} activeTab={tab} datasetId={factDataset?.dataset.id} onKnowledgeSaved={() => setKnowledgeRefreshKey(k => k + 1)} pendingOnboardingId={pendingOnboardingId} onOnboardingConsumed={() => setPendingOnboardingId(null)} />
+        <ChatPanel baseline={baseline} scenarios={scenarios} setScenarios={handleSetScenarios} setActiveTab={setTab} activeTab={tab} datasetId={factDataset?.dataset.id} onKnowledgeSaved={() => setKnowledgeRefreshKey(k => k + 1)} pendingOnboardingId={pendingOnboardingId} onOnboardingConsumed={() => setPendingOnboardingId(null)} modelId={currentModelId} />
       </div>
       <UploadModal
         isOpen={uploadOpen}
