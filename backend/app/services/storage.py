@@ -60,6 +60,23 @@ def _quoted(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
+def _normalize_utf8_view(df: pl.DataFrame) -> pl.DataFrame:
+    """Cast Utf8View / LargeUtf8 columns to pl.String before further processing.
+
+    Newer versions of fastexcel / Polars-Arrow may produce ``Utf8View`` columns
+    (a string-view backed type).  Direct casts from ``Utf8View`` to numeric or
+    date types raise "casting from Utf8View is not allowed" errors.  Converting
+    to the canonical ``String`` (≡ ``Utf8``) type first makes all downstream
+    casts work regardless of Polars version.
+    """
+    casts = []
+    for col_name in df.columns:
+        dtype_repr = str(df[col_name].dtype)
+        if "View" in dtype_repr or "LargeUtf8" in dtype_repr:
+            casts.append(pl.col(col_name).cast(pl.String, strict=False).alias(col_name))
+    return df.with_columns(casts) if casts else df
+
+
 # ---------------------------------------------------------------------------
 # DDL
 # ---------------------------------------------------------------------------
@@ -125,6 +142,8 @@ def _coerce_dataframe(df: pl.DataFrame, columns: list[dict]) -> pl.DataFrame:
     Cast Polars columns to types that map cleanly to the PG target types.
     Unknown columns (e.g. _row_id) are skipped.
     """
+    # Normalise Utf8View → String so subsequent casts don't raise type errors
+    df = _normalize_utf8_view(df)
     col_map = {c["column_name"]: c["data_type"] for c in columns}
     casts = []
     for col_name in df.columns:
@@ -268,4 +287,5 @@ def read_dataset(
         for c, v in zip(col_names, row):
             data[c].append(v)
 
-    return pl.DataFrame(data, infer_schema_length=500)
+    df = pl.DataFrame(data, infer_schema_length=500)
+    return _normalize_utf8_view(df)
