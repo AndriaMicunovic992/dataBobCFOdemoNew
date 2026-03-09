@@ -1097,6 +1097,24 @@ async def upload_file(
     return responses
 
 
+@router.post("/models/{model_id}/upload", response_model=list[DatasetResponse], status_code=201)
+async def upload_file_for_model(
+    model_id: str,
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    name: str | None = Form(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload a file scoped to a specific model. Validates the model exists,
+    then delegates to the standard upload handler with model_id set."""
+    result = await db.execute(
+        select(Model).where(Model.id == model_id, Model.status != "archived")
+    )
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Model not found")
+    return await upload_file(background_tasks, file, name, model_id, db)
+
+
 # ---------------------------------------------------------------------------
 # Datasets — list + baseline (BEFORE /{dataset_id} to avoid param capture)
 # ---------------------------------------------------------------------------

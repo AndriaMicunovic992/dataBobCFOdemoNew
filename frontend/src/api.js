@@ -44,12 +44,12 @@ export async function deleteModel(id) {
 
 // ── Upload ──────────────────────────────────────────────────────────────────
 
-/** Upload an xlsx/xls/csv/tsv file.  Returns list[DatasetResponse]. */
+/** Upload an xlsx/xls/csv/tsv file scoped to a model.  Returns list[DatasetResponse]. */
 export async function uploadFile(file, modelId = null) {
   const fd = new FormData()
   fd.append('file', file)
-  if (modelId) fd.append('model_id', modelId)
-  return req('/upload', { method: 'POST', body: fd })
+  const path = modelId ? `/models/${modelId}/upload` : '/upload'
+  return req(path, { method: 'POST', body: fd })
 }
 
 // ── Datasets ────────────────────────────────────────────────────────────────
