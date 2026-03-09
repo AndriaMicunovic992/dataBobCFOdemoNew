@@ -284,8 +284,8 @@ class KnowledgeEntry(Base):
     id: Mapped[str] = mapped_column(
         String, primary_key=True, server_default=func.gen_random_uuid().cast(String)
     )
-    model_id: Mapped[str | None] = mapped_column(
-        String, ForeignKey("models.id", ondelete="CASCADE"), nullable=True, index=True
+    model_id: Mapped[str] = mapped_column(
+        String, ForeignKey("models.id", ondelete="CASCADE"), nullable=False, index=True
     )
     dataset_id: Mapped[str] = mapped_column(
         String, ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False

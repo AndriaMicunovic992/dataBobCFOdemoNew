@@ -873,9 +873,9 @@ async def list_model_knowledge(model_id: str, db: AsyncSession = Depends(get_db)
     result = await db.execute(
         select(KnowledgeEntry)
         .where(
-            (KnowledgeEntry.model_id == model_id) | (KnowledgeEntry.model_id.is_(None))
+            KnowledgeEntry.model_id == model_id,
+            KnowledgeEntry.confidence != "rejected",
         )
-        .where(KnowledgeEntry.confidence != "rejected")
         .order_by(KnowledgeEntry.entry_type, KnowledgeEntry.created_at.desc())
     )
     return [KnowledgeEntryResponse.model_validate(e) for e in result.scalars().all()]
