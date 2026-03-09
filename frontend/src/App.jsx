@@ -2873,24 +2873,47 @@ function UploadModal({ isOpen, onClose, onUploaded, schemaList, modelId = null }
 }
 
 // ─── UPLOAD SCREEN ───────────────────────────────────────────────
+function fmtSize(bytes) {
+  if (bytes < 1024) return bytes + " B";
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+  return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+}
+
 function UploadScreen({ onUploaded }) {
   const [dragging, setDragging] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [error, setError] = useState(null);
+  const [uploadingFiles, setUploadingFiles] = useState([]); // [{name,size,status,error}]
   const inputRef = useRef(null);
+  const uploadingRef = useRef(false);
 
-  async function handleFile(file) {
-    if (!file) return;
-    setUploading(true);
-    setError(null);
-    try {
-      await uploadFile(file);
-      onUploaded();
-    } catch (e) {
-      setError(e.message ?? "Upload failed");
-      setUploading(false);
+  async function runUploads(files) {
+    if (!files.length) return;
+    const list = files.map(f => ({ name: f.name, size: f.size, status: "pending" }));
+    setUploadingFiles(list);
+    for (let i = 0; i < files.length; i++) {
+      setUploadingFiles(p => p.map((f, idx) => idx === i ? { ...f, status: "uploading" } : f));
+      try {
+        await uploadFile(files[i]);
+        setUploadingFiles(p => p.map((f, idx) => idx === i ? { ...f, status: "done" } : f));
+      } catch (e) {
+        setUploadingFiles(p => p.map((f, idx) => idx === i ? { ...f, status: "error", error: e.message ?? "Upload failed" } : f));
+      }
     }
+    // Brief pause so user sees final state, then proceed
+    setTimeout(() => onUploaded(), 1200);
   }
+
+  function addFiles(fileList) {
+    if (uploadingRef.current) return;
+    const files = Array.from(fileList).filter(f => /\.(xlsx|xls|csv|tsv)$/i.test(f.name));
+    if (!files.length) return;
+    uploadingRef.current = true;
+    runUploads(files).finally(() => { uploadingRef.current = false; });
+  }
+
+  const busy = uploadingFiles.length > 0;
+  const doneCount = uploadingFiles.filter(f => f.status === "done" || f.status === "error").length;
+  const allDone = busy && doneCount === uploadingFiles.length;
+  const hasError = uploadingFiles.some(f => f.status === "error");
 
   return (
     <div style={{ height: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: C.bg, fontFamily: "'Plus Jakarta Sans', sans-serif", position: "relative", overflow: "hidden" }}>
@@ -2899,35 +2922,79 @@ function UploadScreen({ onUploaded }) {
       <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none", zIndex: 0 }}>
         <img src="/IQLogo.png" alt="" style={{ height: "110%", maxWidth: "none", objectFit: "contain", opacity: 0.08, userSelect: "none" }} />
       </div>
-      <div style={{ position: "relative", zIndex: 1, display: "flex", flexDirection: "column", alignItems: "center" }}>
-      <div style={{ marginBottom: 20, display: "flex", alignItems: "center", gap: 10 }}>
-        <span style={{ fontSize: 20, fontWeight: 800, color: "#1a1a2e", letterSpacing: "-0.5px" }}>
-          data<span style={{ color: "#6abbd9" }}>Bob</span>IQ
-        </span>
-      </div>
+      <div style={{ position: "relative", zIndex: 1, display: "flex", flexDirection: "column", alignItems: "center", width: 460 }}>
+        <div style={{ marginBottom: 20 }}>
+          <span style={{ fontSize: 20, fontWeight: 800, color: "#1a1a2e", letterSpacing: "-0.5px" }}>
+            data<span style={{ color: "#6abbd9" }}>Bob</span>IQ
+          </span>
+        </div>
 
-      <div
-        onDragOver={e => { e.preventDefault(); setDragging(true); }}
-        onDragLeave={() => setDragging(false)}
-        onDrop={e => { e.preventDefault(); setDragging(false); handleFile(e.dataTransfer.files[0]); }}
-        onClick={() => inputRef.current?.click()}
-        style={{
-          width: 420, border: `2px dashed ${dragging ? C.brand : C.border}`,
-          borderRadius: 16, padding: "48px 32px", textAlign: "center", cursor: "pointer",
-          background: dragging ? C.brandLight : C.white, transition: "all .2s",
-        }}
-      >
-        <input ref={inputRef} type="file" accept=".xlsx,.xls,.csv,.tsv" style={{ display: "none" }}
-          onChange={e => handleFile(e.target.files[0])} />
-        <div style={{ fontSize: 36, marginBottom: 12 }}>📂</div>
-        <div style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: 6 }}>
-          {uploading ? "Uploading…" : "Drop your data file here"}
+        {/* Drop zone */}
+        <div
+          onDragOver={e => { e.preventDefault(); if (!busy) setDragging(true); }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={e => { e.preventDefault(); setDragging(false); addFiles(e.dataTransfer.files); }}
+          onClick={() => { if (!busy) inputRef.current?.click(); }}
+          style={{
+            width: "100%", border: `2px dashed ${dragging ? C.brand : C.border}`,
+            borderRadius: 16, padding: "48px 32px", textAlign: "center",
+            cursor: busy ? "default" : "pointer",
+            background: dragging ? C.brandLight : C.white, transition: "all .2s",
+            opacity: busy ? 0.55 : 1,
+          }}
+        >
+          <input ref={inputRef} type="file" multiple accept=".xlsx,.xls,.csv,.tsv"
+            style={{ display: "none" }} onChange={e => { addFiles(e.target.files); e.target.value = ""; }} />
+          <div style={{ fontSize: 36, marginBottom: 12 }}>📂</div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: 6 }}>
+            Drop Excel files here or click to browse
+          </div>
+          <div style={{ fontSize: 12, color: C.textMuted }}>
+            .xlsx · .xls · .csv · .tsv — multiple files at once
+          </div>
         </div>
-        <div style={{ fontSize: 13, color: C.textMuted }}>
-          Supports .xlsx · .xls · .csv · .tsv
-        </div>
-        {error && <div style={{ marginTop: 14, color: C.red, fontSize: 12 }}>{error}</div>}
-      </div>
+
+        {/* Per-file progress list */}
+        {busy && (
+          <div style={{ marginTop: 16, width: "100%", borderRadius: 12, border: "1px solid #e8ebee", background: "#fff", overflow: "hidden" }}>
+            {/* Header with overall progress bar */}
+            <div style={{ padding: "10px 16px", background: "#f8f9fb", borderBottom: "1px solid #eef0f2", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: "#1a1a2e" }}>
+                {allDone ? (hasError ? "Completed with errors" : "All files uploaded") : `Uploading ${doneCount + 1} of ${uploadingFiles.length}`}
+              </span>
+              <div style={{ width: 120, height: 4, borderRadius: 2, background: "#e0e3e8", overflow: "hidden" }}>
+                <div style={{
+                  height: "100%", borderRadius: 2,
+                  background: hasError ? "#f59e0b" : allDone ? "#34d399" : "#6abbd9",
+                  width: `${(doneCount / uploadingFiles.length) * 100}%`,
+                  transition: "width 0.4s ease, background 0.3s ease",
+                }} />
+              </div>
+            </div>
+            {/* File rows */}
+            {uploadingFiles.map((f, i) => (
+              <div key={i} style={{ padding: "10px 16px", display: "flex", alignItems: "center", gap: 12, borderBottom: i < uploadingFiles.length - 1 ? "1px solid #f3f4f6" : "none" }}>
+                <div style={{ width: 24, height: 24, borderRadius: 6, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, background: f.status === "done" ? "#ecfdf5" : f.status === "error" ? "#fef2f2" : f.status === "uploading" ? "#e8f6fb" : "#f8f9fb" }}>
+                  {f.status === "done" && <span style={{ color: "#10b981" }}>✓</span>}
+                  {f.status === "error" && <span style={{ color: "#ef4444" }}>✗</span>}
+                  {f.status === "uploading" && <span style={{ color: "#6abbd9", animation: "pulse 1s infinite" }}>↑</span>}
+                  {f.status === "pending" && <span style={{ color: "#d1d5db" }}>○</span>}
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "#1a1a2e", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</div>
+                  {f.status === "error" && f.error && <div style={{ fontSize: 11, color: "#ef4444", marginTop: 2 }}>{f.error}</div>}
+                </div>
+                <div style={{ fontSize: 11, color: "#9ca3af", flexShrink: 0 }}>{fmtSize(f.size)}</div>
+                <div style={{ fontSize: 11, fontWeight: 600, flexShrink: 0, color: f.status === "done" ? "#10b981" : f.status === "error" ? "#ef4444" : f.status === "uploading" ? "#6abbd9" : "#9ca3af" }}>
+                  {f.status === "done" && "Done"}
+                  {f.status === "error" && "Failed"}
+                  {f.status === "uploading" && "Uploading…"}
+                  {f.status === "pending" && "Waiting"}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
