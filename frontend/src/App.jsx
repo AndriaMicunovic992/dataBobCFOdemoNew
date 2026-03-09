@@ -3923,7 +3923,9 @@ export default function App() {
   const { data: apiBaseline } = useQuery({
     queryKey: ["baseline", factDataset?.dataset.id, relIds, currentModelId],
     queryFn: () => getBaseline(factDataset.dataset.id, relIds, currentModelId),
-    enabled: !!factDataset?.dataset.id,
+    // Only fetch when the user actually opens a tab that needs the data.
+    // This avoids a heavy join query on every model selection.
+    enabled: !!factDataset?.dataset.id && (tab === "actuals" || tab === "scenarios"),
     staleTime: 30_000,
   });
   const baseline = useMemo(() => apiBaseline ? apiBaselineToRows(apiBaseline) : [], [apiBaseline]);
