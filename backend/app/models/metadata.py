@@ -12,6 +12,35 @@ from sqlalchemy.sql import func
 from app.database import Base
 
 
+class Model(Base):
+    """Top-level workspace container. All datasets, scenarios, and knowledge belong to a model."""
+
+    __tablename__ = "models"
+
+    id: Mapped[str] = mapped_column(
+        String, primary_key=True, server_default=func.gen_random_uuid().cast(String)
+    )
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="active")  # active | archived
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), onupdate=func.now(), nullable=True
+    )
+
+    datasets: Mapped[list["Dataset"]] = relationship(
+        "Dataset", back_populates="model", cascade="all, delete-orphan"
+    )
+    scenarios: Mapped[list["Scenario"]] = relationship(
+        "Scenario", back_populates="model", cascade="all, delete-orphan"
+    )
+    knowledge_entries: Mapped[list["KnowledgeEntry"]] = relationship(
+        "KnowledgeEntry", back_populates="model", cascade="all, delete-orphan"
+    )
+
+
 class Dataset(Base):
     """Tracks a parsed dataset and its dynamic PostgreSQL table."""
 
@@ -19,6 +48,9 @@ class Dataset(Base):
 
     id: Mapped[str] = mapped_column(
         String, primary_key=True, server_default=func.gen_random_uuid().cast(String)
+    )
+    model_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("models.id", ondelete="SET NULL"), nullable=True, index=True
     )
     name: Mapped[str] = mapped_column(String, nullable=False)
     table_name: Mapped[str] = mapped_column(String, nullable=False, unique=True)
@@ -38,6 +70,7 @@ class Dataset(Base):
     # Semantic layer: structured agent summary injected into scenario agent prompts
     agent_context_notes: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
+    model: Mapped["Model | None"] = relationship("Model", back_populates="datasets")
     columns: Mapped[list["DatasetColumn"]] = relationship(
         "DatasetColumn", back_populates="dataset", cascade="all, delete-orphan"
     )
@@ -132,6 +165,9 @@ class Scenario(Base):
     id: Mapped[str] = mapped_column(
         String, primary_key=True, server_default=func.gen_random_uuid().cast(String)
     )
+    model_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("models.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     name: Mapped[str] = mapped_column(String, nullable=False)
     dataset_id: Mapped[str] = mapped_column(
         String, ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False
@@ -146,6 +182,7 @@ class Scenario(Base):
         DateTime(timezone=True), onupdate=func.now(), nullable=True
     )
 
+    model: Mapped["Model | None"] = relationship("Model", back_populates="scenarios")
     dataset: Mapped["Dataset"] = relationship("Dataset", back_populates="scenarios")
 
 
@@ -244,6 +281,9 @@ class KnowledgeEntry(Base):
     id: Mapped[str] = mapped_column(
         String, primary_key=True, server_default=func.gen_random_uuid().cast(String)
     )
+    model_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("models.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     dataset_id: Mapped[str] = mapped_column(
         String, ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False
     )
@@ -265,4 +305,5 @@ class KnowledgeEntry(Base):
         DateTime(timezone=True), onupdate=func.now(), nullable=True
     )
 
+    model: Mapped["Model | None"] = relationship("Model", back_populates="knowledge_entries")
     dataset: Mapped["Dataset"] = relationship("Dataset", back_populates="knowledge_entries")

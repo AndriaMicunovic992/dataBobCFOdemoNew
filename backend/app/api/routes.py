@@ -23,7 +23,7 @@ from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.database import get_db, sync_engine
-from app.models.metadata import Dataset, DatasetColumn, DatasetRelationship, KnowledgeEntry, Scenario, SemanticColumn, SemanticValueLabel, TransformationStep
+from app.models.metadata import Dataset, DatasetColumn, DatasetRelationship, KnowledgeEntry, Model, Scenario, SemanticColumn, SemanticValueLabel, TransformationStep
 from app.schemas.api import (
     BaselineRequest,
     BaselineResponse,
@@ -37,6 +37,10 @@ from app.schemas.api import (
     KnowledgeEntryCreate,
     KnowledgeEntryResponse,
     KnowledgeEntryUpdate,
+    ModelCreate,
+    ModelResponse,
+    ModelSummary,
+    ModelUpdate,
     OrderByClause,
     QueryRequest,
     QueryResponse,
@@ -604,6 +608,137 @@ async def _run_agent_and_persist(dataset_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Models (workspace containers)
+# ---------------------------------------------------------------------------
+
+_DEFAULT_MODEL_ID = "00000000000000000000000000000001"
+
+
+async def _ensure_default_model(db: AsyncSession) -> Model:
+    """Return the default model, creating it if it doesn't exist."""
+    result = await db.execute(select(Model).where(Model.id == _DEFAULT_MODEL_ID))
+    m = result.scalar_one_or_none()
+    if m is None:
+        m = Model(id=_DEFAULT_MODEL_ID, name="Default Model", status="active")
+        db.add(m)
+        await db.commit()
+        await db.refresh(m)
+    return m
+
+
+@router.get("/models", response_model=list[ModelSummary])
+async def list_models(db: AsyncSession = Depends(get_db)):
+    """Return all non-archived models with dataset/scenario counts.
+    Auto-creates a default model if none exist (fresh install).
+    """
+    from sqlalchemy import func as sqlfunc
+    result = await db.execute(
+        select(Model)
+        .where(Model.status != "archived")
+        .order_by(Model.created_at)
+    )
+    models = result.scalars().all()
+
+    # Auto-create default model for fresh installs
+    if not models:
+        default = await _ensure_default_model(db)
+        models = [default]
+
+    summaries = []
+    for m in models:
+        ds_count_r = await db.execute(
+            select(sqlfunc.count()).select_from(Dataset).where(
+                Dataset.model_id == m.id, Dataset.status != "deleted"
+            )
+        )
+        sc_count_r = await db.execute(
+            select(sqlfunc.count()).select_from(Scenario).where(
+                Scenario.model_id == m.id
+            )
+        )
+        summaries.append(ModelSummary(
+            id=m.id,
+            name=m.name,
+            description=m.description,
+            status=m.status,
+            dataset_count=ds_count_r.scalar() or 0,
+            scenario_count=sc_count_r.scalar() or 0,
+            created_at=m.created_at,
+            updated_at=m.updated_at,
+        ))
+    return summaries
+
+
+@router.post("/models", response_model=ModelResponse, status_code=201)
+async def create_model(body: ModelCreate, db: AsyncSession = Depends(get_db)):
+    """Create a new model workspace."""
+    m = Model(
+        id=uuid.uuid4().hex,
+        name=body.name,
+        description=body.description,
+        status="active",
+    )
+    db.add(m)
+    await db.commit()
+    await db.refresh(m)
+    return ModelResponse.model_validate(m)
+
+
+@router.get("/models/{model_id}", response_model=ModelResponse)
+async def get_model(model_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Model).where(Model.id == model_id))
+    m = result.scalar_one_or_none()
+    if m is None:
+        raise HTTPException(status_code=404, detail="Model not found")
+    return ModelResponse.model_validate(m)
+
+
+@router.patch("/models/{model_id}", response_model=ModelResponse)
+async def update_model(model_id: str, body: ModelUpdate, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Model).where(Model.id == model_id))
+    m = result.scalar_one_or_none()
+    if m is None:
+        raise HTTPException(status_code=404, detail="Model not found")
+    if body.name is not None:
+        m.name = body.name
+    if body.description is not None:
+        m.description = body.description
+    if body.status is not None:
+        m.status = body.status
+    await db.commit()
+    await db.refresh(m)
+    return ModelResponse.model_validate(m)
+
+
+@router.delete("/models/{model_id}", status_code=204)
+async def delete_model(model_id: str, db: AsyncSession = Depends(get_db)):
+    if model_id == _DEFAULT_MODEL_ID:
+        raise HTTPException(status_code=403, detail="The default model cannot be deleted.")
+    result = await db.execute(select(Model).where(Model.id == model_id))
+    m = result.scalar_one_or_none()
+    if m is None:
+        raise HTTPException(status_code=404, detail="Model not found")
+    m.status = "archived"
+    await db.commit()
+
+
+@router.get("/models/{model_id}/datasets", response_model=list[SchemaResponse])
+async def list_model_datasets(model_id: str, db: AsyncSession = Depends(get_db)):
+    """Return all datasets belonging to a model."""
+    result = await db.execute(
+        select(Dataset)
+        .where(Dataset.model_id == model_id, Dataset.status != "deleted")
+        .options(
+            selectinload(Dataset.columns),
+            selectinload(Dataset.source_relationships),
+            selectinload(Dataset.target_relationships),
+        )
+        .order_by(Dataset.created_at.desc())
+    )
+    return [_schema_response(d) for d in result.scalars().all()]
+
+
+# ---------------------------------------------------------------------------
 # Upload
 # ---------------------------------------------------------------------------
 
@@ -612,6 +747,7 @@ async def upload_file(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     name: str | None = Form(default=None),
+    model_id: str | None = Form(default=None),
     db: AsyncSession = Depends(get_db),
 ):
     """Upload a CSV or Excel file.
@@ -683,6 +819,7 @@ async def upload_file(
 
         dataset = Dataset(
             id=uuid.uuid4().hex,
+            model_id=model_id or _DEFAULT_MODEL_ID,
             name=dataset_display_name,
             table_name=table_name,
             source_filename=file.filename,
@@ -1108,11 +1245,13 @@ async def list_scenarios(
 async def create_scenario(body: ScenarioCreate, db: AsyncSession = Depends(get_db)):
     """Create a new what-if scenario."""
     r = await db.execute(select(Dataset).where(Dataset.id == body.dataset_id))
-    if r.scalar_one_or_none() is None:
+    ds = r.scalar_one_or_none()
+    if ds is None:
         raise HTTPException(status_code=404, detail="Dataset not found")
 
     scenario = Scenario(
         id=uuid.uuid4().hex,
+        model_id=ds.model_id,
         name=body.name,
         dataset_id=body.dataset_id,
         rules=body.rules,
@@ -1893,11 +2032,13 @@ async def create_knowledge(
 ):
     """Create a new knowledge entry for a dataset."""
     r = await db.execute(select(Dataset).where(Dataset.id == dataset_id, Dataset.status != "deleted"))
-    if r.scalar_one_or_none() is None:
+    ds = r.scalar_one_or_none()
+    if ds is None:
         raise HTTPException(status_code=404, detail="Dataset not found")
 
     entry = KnowledgeEntry(
         id=uuid.uuid4().hex,
+        model_id=ds.model_id,
         dataset_id=dataset_id,
         entry_type=body.entry_type,
         plain_text=body.plain_text,

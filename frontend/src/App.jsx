@@ -11,6 +11,7 @@ import {
   streamChat,
   getScenarios, createScenario, updateScenario, deleteScenario, computeScenario,
   getKnowledge, createKnowledge, updateKnowledge, deleteKnowledge,
+  listModels, createModel, updateModel, deleteModel,
 } from "./api.js";
 
 // ─── THEME ──────────────────────────────────────────────────────
@@ -2644,7 +2645,7 @@ function apiBaselineToRows(bl) {
 }
 
 // ─── UPLOAD MODAL ────────────────────────────────────────────────
-function UploadModal({ isOpen, onClose, onUploaded, schemaList }) {
+function UploadModal({ isOpen, onClose, onUploaded, schemaList, modelId = null }) {
   const [queue, setQueue] = useState([]); // [{id, file, status, error, datasetIds}]
   const [dragging, setDragging] = useState(false);
   const [deletingId, setDeletingId] = useState(null); // dataset id pending confirm
@@ -2660,7 +2661,7 @@ function UploadModal({ isOpen, onClose, onUploaded, schemaList }) {
       uploadingRef.current = true;
       setQueue(p => p.map(q => q.id === next.id ? { ...q, status: "uploading" } : q));
       try {
-        const result = await uploadFile(next.file);
+        const result = await uploadFile(next.file, modelId);
         const ids = (result ?? []).map(ds => ds.id);
         setQueue(p => p.map(q => q.id === next.id ? { ...q, status: "done", datasetIds: ids } : q));
         onUploaded();
@@ -2873,6 +2874,363 @@ function UploadScreen({ onUploaded }) {
   );
 }
 
+// ─── MODEL LANDING PAGE ───────────────────────────────────────────
+const FLOW_STEPS = [
+  { icon: "📤", title: "Upload Data", desc: "Drop your Excel files — GL entries, chart of accounts, invoice lines. dataBobIQ auto-detects the structure." },
+  { icon: "🔍", title: "Understand", desc: "The Data Agent analyzes your tables, finds relationships, and asks smart questions to learn your business logic." },
+  { icon: "📊", title: "Explore Actuals", desc: "Pivot, filter, and visualize your real data. Drag fields to build any view — save favorites for quick access." },
+  { icon: "🔮", title: "Plan Scenarios", desc: "Create what-if models: increase revenue 10%, cut costs 300K, project into 2026. Compare side-by-side with actuals." },
+  { icon: "💡", title: "Decide", desc: "Use the comparison tables, waterfall charts, and AI insights to make data-driven decisions with confidence." },
+];
+
+function ModelLandingPage({ models, loading, onSelect, onRefresh, onShowHowItWorks }) {
+  const [creating, setCreating] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newDesc, setNewDesc] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [editName, setEditName] = useState("");
+  const [hoveredId, setHoveredId] = useState(null);
+  const [menuOpenId, setMenuOpenId] = useState(null);
+
+  const handleCreate = async () => {
+    if (!newName.trim() || saving) return;
+    setSaving(true);
+    try {
+      const m = await createModel({ name: newName.trim(), description: newDesc.trim() || null });
+      setCreating(false); setNewName(""); setNewDesc("");
+      onSelect(m.id, m.name);
+    } catch (e) { console.error(e); }
+    finally { setSaving(false); }
+  };
+
+  const handleRename = async (id) => {
+    if (!editName.trim()) { setEditingId(null); return; }
+    try {
+      await updateModel(id, { name: editName.trim() });
+      setEditingId(null); onRefresh();
+    } catch (e) { console.error(e); }
+  };
+
+  const handleArchive = async (id) => {
+    if (!confirm("Archive this model? It will be hidden from the list.")) return;
+    try { await updateModel(id, { status: "archived" }); setMenuOpenId(null); onRefresh(); }
+    catch (e) { console.error(e); }
+  };
+
+  useEffect(() => {
+    if (!menuOpenId) return;
+    const h = () => setMenuOpenId(null);
+    document.addEventListener("click", h);
+    return () => document.removeEventListener("click", h);
+  }, [menuOpenId]);
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#fafbfc", fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif" }}>
+      <link href={FONT_URL} rel="stylesheet" />
+      {/* ── TOP BAR ── */}
+      <div style={{ background: "#fff", borderBottom: "1px solid #eef0f2", padding: "14px 32px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span style={{ fontSize: 20, fontWeight: 800, color: "#1a1a2e", letterSpacing: "-0.5px" }}>
+          data<span style={{ color: C.brand }}>Bob</span>IQ
+        </span>
+        <button onClick={onShowHowItWorks}
+          onMouseEnter={e => { e.currentTarget.style.borderColor = C.brand; e.currentTarget.style.color = C.brand; }}
+          onMouseLeave={e => { e.currentTarget.style.borderColor = "#e0e3e8"; e.currentTarget.style.color = "#4b5563"; }}
+          style={{ background: "none", border: "1.5px solid #e0e3e8", borderRadius: 8, padding: "6px 16px", fontSize: 13, fontWeight: 600, color: "#4b5563", cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 6, transition: "all 0.15s" }}>
+          <span style={{ fontSize: 15 }}>📖</span> How It Works
+        </button>
+      </div>
+
+      {/* ── HERO + FLOW ── */}
+      <div style={{ background: "linear-gradient(160deg, #f0f9fd 0%, #ffffff 40%, #f8f9fb 100%)", padding: "44px 32px 40px", borderBottom: "1px solid #eef0f2" }}>
+        <div style={{ maxWidth: 960, margin: "0 auto" }}>
+          <h1 style={{ fontSize: 28, fontWeight: 800, color: "#1a1a2e", margin: 0, letterSpacing: "-0.5px" }}>Your Models</h1>
+          <p style={{ fontSize: 14, color: "#6b7280", marginTop: 6, lineHeight: 1.5, maxWidth: 560 }}>
+            Each model is an independent workspace with its own data, scenarios, and AI-learned knowledge. Here's how it works:
+          </p>
+          <div style={{ display: "flex", gap: 0, marginTop: 28, overflowX: "auto", paddingBottom: 4 }}>
+            {FLOW_STEPS.map((step, i) => (
+              <div key={i} style={{ display: "flex", alignItems: "center" }}>
+                <div style={{ background: "#fff", borderRadius: 12, padding: "16px 18px", minWidth: 155, maxWidth: 175, border: "1px solid #e8ebee", boxShadow: "0 1px 3px rgba(0,0,0,0.03)" }}>
+                  <div style={{ fontSize: 22, marginBottom: 8 }}>{step.icon}</div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#1a1a2e", marginBottom: 4 }}>{step.title}</div>
+                  <div style={{ fontSize: 11, color: "#6b7280", lineHeight: 1.45 }}>{step.desc}</div>
+                </div>
+                {i < FLOW_STEPS.length - 1 && (
+                  <div style={{ color: "#c4c9cf", fontSize: 16, padding: "0 6px", flexShrink: 0 }}>→</div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* ── MODEL GRID ── */}
+      <div style={{ maxWidth: 960, margin: "0 auto", padding: "32px 32px 64px" }}>
+        {loading && models.length === 0 && (
+          <div style={{ textAlign: "center", padding: 60, color: "#9ca3af", fontSize: 13 }}>Loading models...</div>
+        )}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 20 }}>
+          {models.map(m => {
+            const isHovered = hoveredId === m.id;
+            const isEditing = editingId === m.id;
+            const isMenuOpen = menuOpenId === m.id;
+            return (
+              <div key={m.id}
+                onMouseEnter={() => setHoveredId(m.id)}
+                onMouseLeave={() => setHoveredId(null)}
+                onClick={() => { if (!isEditing && !isMenuOpen) onSelect(m.id, m.name); }}
+                style={{ background: "#fff", borderRadius: 14, padding: 24, border: `1.5px solid ${isHovered ? C.brand : "#e8ebee"}`, cursor: isEditing ? "default" : "pointer", transition: "all 0.2s ease", boxShadow: isHovered ? `0 8px 24px ${C.brand}1e` : "0 1px 3px rgba(0,0,0,0.04)", position: "relative", minHeight: 160, display: "flex", flexDirection: "column" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+                  {isEditing ? (
+                    <input value={editName} onChange={e => setEditName(e.target.value)}
+                      onKeyDown={e => { if (e.key === "Enter") handleRename(m.id); if (e.key === "Escape") setEditingId(null); }}
+                      onBlur={() => handleRename(m.id)} autoFocus
+                      onClick={e => e.stopPropagation()}
+                      style={{ fontSize: 16, fontWeight: 700, color: "#1a1a2e", border: "none", borderBottom: `2px solid ${C.brand}`, outline: "none", background: "transparent", padding: "0 0 2px", width: "80%", fontFamily: "inherit" }} />
+                  ) : (
+                    <div style={{ fontSize: 16, fontWeight: 700, color: "#1a1a2e", lineHeight: 1.3, flex: 1, paddingRight: 8 }}>{m.name}</div>
+                  )}
+                  <div style={{ position: "relative" }}>
+                    <button onClick={e => { e.stopPropagation(); setMenuOpenId(isMenuOpen ? null : m.id); }}
+                      style={{ background: "none", border: "none", cursor: "pointer", padding: "2px 6px", fontSize: 18, color: "#9ca3af", borderRadius: 6, lineHeight: 1, opacity: isHovered || isMenuOpen ? 1 : 0, transition: "opacity 0.15s" }}>⋯</button>
+                    {isMenuOpen && (
+                      <div onClick={e => e.stopPropagation()} style={{ position: "absolute", right: 0, top: 28, background: "#fff", borderRadius: 10, boxShadow: "0 8px 30px rgba(0,0,0,0.12)", border: "1px solid #e8ebee", overflow: "hidden", zIndex: 10, minWidth: 150 }}>
+                        <button onClick={() => { setEditName(m.name); setEditingId(m.id); setMenuOpenId(null); }}
+                          onMouseEnter={e => e.currentTarget.style.background = "#f9fafb"}
+                          onMouseLeave={e => e.currentTarget.style.background = "none"}
+                          style={{ display: "block", width: "100%", padding: "10px 16px", border: "none", background: "none", cursor: "pointer", fontSize: 13, color: "#374151", textAlign: "left" }}>Rename</button>
+                        <button onClick={() => handleArchive(m.id)}
+                          onMouseEnter={e => e.currentTarget.style.background = "#fef2f2"}
+                          onMouseLeave={e => e.currentTarget.style.background = "none"}
+                          style={{ display: "block", width: "100%", padding: "10px 16px", border: "none", background: "none", cursor: "pointer", fontSize: 13, color: "#ef4444", textAlign: "left" }}>Archive</button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                {m.description && (
+                  <div style={{ fontSize: 13, color: "#6b7280", lineHeight: 1.4, marginBottom: 12, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{m.description}</div>
+                )}
+                <div style={{ flex: 1 }} />
+                <div style={{ display: "flex", gap: 16, marginTop: 8, paddingTop: 12, borderTop: "1px solid #f3f4f6" }}>
+                  <span style={{ fontSize: 12, color: "#6b7280" }}>📊 {m.dataset_count} dataset{m.dataset_count !== 1 ? "s" : ""}</span>
+                  <span style={{ fontSize: 12, color: "#6b7280" }}>🔮 {m.scenario_count} scenario{m.scenario_count !== 1 ? "s" : ""}</span>
+                </div>
+                <div style={{ fontSize: 11, color: "#c4c9cf", marginTop: 8 }}>
+                  Created {new Date(m.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                </div>
+              </div>
+            );
+          })}
+
+          {/* ── New Model card ── */}
+          {creating ? (
+            <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 14, padding: 24, border: `2px solid ${C.brand}`, boxShadow: `0 8px 24px ${C.brand}1e`, minHeight: 160, display: "flex", flexDirection: "column" }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: C.brand, marginBottom: 12, textTransform: "uppercase", letterSpacing: "0.5px" }}>New Model</div>
+              <input value={newName} onChange={e => setNewName(e.target.value)} placeholder="Model name" autoFocus
+                onKeyDown={e => { if (e.key === "Enter") handleCreate(); if (e.key === "Escape") { setCreating(false); setNewName(""); setNewDesc(""); } }}
+                style={{ width: "100%", padding: "8px 10px", fontSize: 14, fontWeight: 600, borderRadius: 8, border: "1.5px solid #e8ebee", outline: "none", marginBottom: 8, fontFamily: "inherit" }} />
+              <textarea value={newDesc} onChange={e => setNewDesc(e.target.value)} placeholder="Description (optional)"
+                style={{ width: "100%", padding: "8px 10px", fontSize: 12, borderRadius: 8, border: "1.5px solid #e8ebee", outline: "none", marginBottom: 12, minHeight: 44, resize: "vertical", fontFamily: "inherit" }} />
+              <div style={{ flex: 1 }} />
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={handleCreate} disabled={!newName.trim() || saving}
+                  style={{ padding: "8px 20px", fontSize: 13, fontWeight: 600, borderRadius: 8, border: "none", cursor: "pointer", fontFamily: "inherit", background: newName.trim() ? C.brand : "#e8ebee", color: newName.trim() ? "#fff" : "#999" }}>
+                  {saving ? "Creating..." : "Create Model"}
+                </button>
+                <button onClick={() => { setCreating(false); setNewName(""); setNewDesc(""); }}
+                  style={{ padding: "8px 16px", fontSize: 13, fontWeight: 500, borderRadius: 8, border: "none", cursor: "pointer", background: "#f3f4f6", color: "#6b7280", fontFamily: "inherit" }}>Cancel</button>
+              </div>
+            </div>
+          ) : (
+            <div onClick={() => setCreating(true)}
+              onMouseEnter={e => {
+                e.currentTarget.style.borderColor = C.brand;
+                e.currentTarget.querySelector(".plus-icon").style.background = C.brand;
+                e.currentTarget.querySelector(".plus-icon").style.color = "#fff";
+              }}
+              onMouseLeave={e => {
+                e.currentTarget.style.borderColor = "#dde0e4";
+                e.currentTarget.querySelector(".plus-icon").style.background = "#f0f9fd";
+                e.currentTarget.querySelector(".plus-icon").style.color = C.brand;
+              }}
+              style={{ background: "#fafbfc", borderRadius: 14, border: "2px dashed #dde0e4", cursor: "pointer", minHeight: 160, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8, color: "#9ca3af", transition: "all 0.2s ease" }}>
+              <div className="plus-icon" style={{ width: 44, height: 44, borderRadius: 12, background: "#f0f9fd", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, color: C.brand, transition: "all 0.2s ease" }}>+</div>
+              <span style={{ fontSize: 14, fontWeight: 600 }}>New Model</span>
+            </div>
+          )}
+        </div>
+
+        {/* ── Empty state ── */}
+        {!loading && models.length === 0 && (
+          <div style={{ textAlign: "center", padding: "60px 0" }}>
+            <div style={{ width: 64, height: 64, borderRadius: 16, background: "#f0f9fd", margin: "0 auto 16px", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 28 }}>📦</div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: "#1a1a2e", marginBottom: 4 }}>No models yet</div>
+            <div style={{ fontSize: 13, color: "#6b7280", marginBottom: 20 }}>Create your first model to start analyzing data.</div>
+            <button onClick={() => setCreating(true)} style={{ padding: "10px 24px", fontSize: 14, fontWeight: 600, borderRadius: 10, border: "none", cursor: "pointer", background: C.brand, color: "#fff", fontFamily: "inherit" }}>+ Create Model</button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── HOW IT WORKS MODAL ───────────────────────────────────────────
+function HowItWorksSection({ icon, title, content, details, extraContent, agentBadge, agentNote }) {
+  return (
+    <div style={{ marginTop: 24 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+        <div style={{ width: 28, height: 28, borderRadius: 8, background: "#f0f9fd", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0 }}>{icon}</div>
+        <div style={{ fontSize: 15, fontWeight: 700, color: "#1a1a2e" }}>{title}</div>
+        {agentBadge && (
+          <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 8px", borderRadius: 6, textTransform: "uppercase", letterSpacing: "0.5px", background: agentBadge === "data_understanding" ? "#eef2ff" : "#dbeafe", color: agentBadge === "data_understanding" ? "#6366f1" : "#2563eb" }}>
+            {agentBadge === "data_understanding" ? "Data Agent" : "Scenario Agent"}
+          </span>
+        )}
+      </div>
+      <div style={{ fontSize: 13, color: "#4b5563", lineHeight: 1.6, paddingLeft: 38 }}>
+        {content}
+        {details && (
+          <ul style={{ margin: "8px 0", paddingLeft: 18, listStyleType: "disc" }}>
+            {details.map((d, i) => <li key={i} style={{ fontSize: 12, color: "#6b7280", marginBottom: 4, lineHeight: 1.5 }}>{d}</li>)}
+          </ul>
+        )}
+        {extraContent && <div style={{ marginTop: 8 }}>{extraContent}</div>}
+        {agentNote && <div style={{ marginTop: 8, fontSize: 12, color: "#6b7280", fontStyle: "italic" }}>💬 {agentNote}</div>}
+      </div>
+    </div>
+  );
+}
+
+function HowItWorksModal({ onClose }) {
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "flex-start", justifyContent: "center", zIndex: 1000, overflowY: "auto", padding: "40px 16px" }}>
+      <div style={{ background: "#fff", borderRadius: 16, maxWidth: 680, width: "100%", boxShadow: "0 24px 80px rgba(0,0,0,0.2)", position: "relative" }}>
+        <button onClick={onClose} style={{ position: "absolute", top: 16, right: 16, background: "#f3f4f6", border: "none", borderRadius: 8, width: 32, height: 32, cursor: "pointer", fontSize: 16, display: "flex", alignItems: "center", justifyContent: "center", color: "#6b7280" }}>×</button>
+        <div style={{ padding: "32px 32px 0" }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.brand, textTransform: "uppercase", letterSpacing: "1px", marginBottom: 8 }}>Getting Started</div>
+          <h2 style={{ fontSize: 24, fontWeight: 800, color: "#1a1a2e", margin: 0, letterSpacing: "-0.3px" }}>How dataBobIQ Works</h2>
+          <p style={{ fontSize: 14, color: "#6b7280", marginTop: 8, lineHeight: 1.6 }}>
+            dataBobIQ is your AI-powered CFO companion. Upload your financial data, let the AI understand your business, explore your actuals, and build scenarios for the future — all in one place.
+          </p>
+        </div>
+        <div style={{ padding: "24px 32px 32px" }}>
+          <HowItWorksSection number="1" icon="📦" title="Create a Model"
+            content="A Model is your workspace — think of it like a project folder. Each model has its own data, scenarios, knowledge, and chat history, completely isolated from other models. You might have one for annual budgeting, another for a reforecast, and another for acquisition analysis." />
+          <HowItWorksSection number="2" icon="📤" title="Upload Your Data"
+            content="Drop Excel files into the Data Model tab. dataBobIQ automatically detects the structure — tables, columns, data types, and relationships. You can upload multiple files: general ledger entries, chart of accounts, invoice lines, company master data. The system figures out how they connect." />
+          <HowItWorksSection number="3" icon="🔍" title="Talk to the Data Agent" agentBadge="data_understanding"
+            content="On the Data Model tab, the chat panel connects you to the Data Understanding Agent. This AI specialist analyzes your data and asks smart questions about things it can't figure out automatically — relationships between tables, business calculations, how to interpret codes and values. Your answers become permanent knowledge that improves all future analysis."
+            details={["Saves 5 types of knowledge: Relationships, Calculations, Transformations, Definitions, and Notes", "Knowledge appears in the Knowledge panel where you can review, edit, or delete entries", "Everything you teach the Data Agent is used by the Scenario Agent too"]} />
+          <HowItWorksSection number="4" icon="📊" title="Explore Your Actuals" agentBadge="scenario" agentNote="The Scenario Agent is available here to help with analysis questions."
+            content="The Actuals tab is your interactive pivot table. Drag fields into Rows, Columns, and Values to build any view of your data. Apply filters to focus on specific accounts, periods, or companies. Save your favorite configurations as Views for one-click access later." />
+          <HowItWorksSection number="5" icon="🔮" title="Build Scenarios" agentBadge="scenario"
+            agentNote="The Scenario Agent can create and modify scenarios through chat: just say 'create a scenario with 5% revenue growth for 2026'."
+            content="The Scenarios tab lets you create what-if models. Each scenario starts from a base year of real data and applies rules:"
+            details={["Multiplier rules: 'Increase revenue by 10%' → ×1.10", "Offset rules: 'Add 300K to personnel costs' → +300,000", "Equal or proportional distribution across months", "Project into future periods that don't have actuals yet"]}
+            extraContent="The comparison table shows Actuals vs Scenario side-by-side with the delta (Δ) for every row. The waterfall chart visualizes what's driving the change." />
+          <div style={{ background: "#f0f9fd", borderRadius: 12, padding: "20px 24px", marginTop: 24, border: "1px solid #d4ecf5" }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#1a1a2e", marginBottom: 12 }}>🤖 Two AI Agents, One Chat Panel</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#6366f1", marginBottom: 4 }}>🔍 Data Understanding Agent</div>
+                <div style={{ fontSize: 12, color: "#4b5563", lineHeight: 1.5 }}>Active on the <strong>Data Model</strong> tab. Learns about your data structure, saves knowledge entries, answers questions about tables and fields. Proactively asks questions after you upload data.</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#2563eb", marginBottom: 4 }}>📊 Scenario Agent</div>
+                <div style={{ fontSize: 12, color: "#4b5563", lineHeight: 1.5 }}>Active on <strong>Actuals</strong> and <strong>Scenarios</strong> tabs. Creates scenarios, applies rules, answers analysis questions. Uses the knowledge saved by the Data Agent.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── ONBOARDING CHECKLIST ─────────────────────────────────────────
+const ONBOARDING_STEPS = [
+  { key: "upload_data", title: "Upload your data", description: "Go to the Data Model tab and upload an Excel file with your financial data.", tab: "schema" },
+  { key: "review_schema", title: "Review the detected schema", description: "Check that column roles (dimension, measure, time) are correct. Adjust if needed.", tab: "schema" },
+  { key: "chat_data_agent", title: "Talk to the Data Agent", description: "Answer the Data Agent's questions about your data. This teaches the system your business logic.", tab: "schema" },
+  { key: "explore_actuals", title: "Explore your actuals", description: "Go to the Actuals tab. Set up rows, columns, and values to see your data in a pivot table.", tab: "actuals" },
+  { key: "save_view", title: "Save a view", description: "Find a pivot configuration you like and save it as a View for quick access later.", tab: "actuals" },
+  { key: "create_scenario", title: "Create your first scenario", description: "Go to the Scenarios tab and create a scenario — either manually or by asking the Scenario Agent in chat.", tab: "scenarios" },
+];
+
+function getCompletedSteps(modelId, datasets, scenarios, knowledgeEntries, savedViews, onboardingState) {
+  const manual = onboardingState[modelId] || {};
+  const completed = { ...manual };
+  if (datasets.length > 0) completed.upload_data = true;
+  if (datasets.some(d => d.columns?.some(c => c.column_role))) completed.review_schema = true;
+  if (knowledgeEntries.some(e => e.source === "chat_agent")) completed.chat_data_agent = true;
+  if (savedViews.length > 0) completed.save_view = true;
+  if (scenarios.length > 0) completed.create_scenario = true;
+  return completed;
+}
+
+function OnboardingChecklist({ steps, completedSteps, onDismiss, onGoToTab }) {
+  const [collapsed, setCollapsed] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
+  const doneCount = steps.filter(s => completedSteps[s.key]).length;
+  const allDone = doneCount === steps.length;
+  const progress = doneCount / steps.length;
+  const circumference = 2 * Math.PI * 16; // r=16
+
+  if (dismissed) return null;
+  return (
+    <div style={{ position: "fixed", bottom: 20, right: 20, width: collapsed ? 56 : 300, background: "#fff", borderRadius: 14, boxShadow: "0 8px 40px rgba(0,0,0,0.12)", border: "1px solid #e8ebee", zIndex: 100, transition: "width 0.25s ease", overflow: "hidden", fontFamily: "'Plus Jakarta Sans', -apple-system, sans-serif" }}>
+      {collapsed ? (
+        <div onClick={() => setCollapsed(false)} style={{ width: 56, height: 56, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", position: "relative" }}>
+          <svg width="40" height="40" style={{ transform: "rotate(-90deg)" }}>
+            <circle cx="20" cy="20" r="16" fill="none" stroke="#eef0f2" strokeWidth="3" />
+            <circle cx="20" cy="20" r="16" fill="none" stroke={C.brand} strokeWidth="3" strokeDasharray={`${progress * circumference} ${circumference}`} strokeLinecap="round" />
+          </svg>
+          <span style={{ position: "absolute", fontSize: 12, fontWeight: 700, color: "#1a1a2e" }}>{doneCount}</span>
+        </div>
+      ) : (
+        <>
+          <div style={{ padding: "14px 16px 10px", display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: "1px solid #f3f4f6" }}>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#1a1a2e" }}>Getting Started</div>
+              <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 2 }}>{allDone ? "All done! 🎉" : `${doneCount} of ${steps.length} complete`}</div>
+            </div>
+            <div style={{ display: "flex", gap: 4 }}>
+              <button onClick={() => setCollapsed(true)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, color: "#9ca3af", padding: 4 }}>−</button>
+              <button onClick={() => { setDismissed(true); onDismiss(); }} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, color: "#9ca3af", padding: 4 }}>×</button>
+            </div>
+          </div>
+          <div style={{ padding: "8px 16px 4px" }}>
+            <div style={{ height: 4, borderRadius: 2, background: "#eef0f2", overflow: "hidden" }}>
+              <div style={{ height: "100%", borderRadius: 2, background: allDone ? "linear-gradient(90deg, #34d399, #10b981)" : `linear-gradient(90deg, ${C.brand}, #38a3c9)`, width: `${progress * 100}%`, transition: "width 0.4s ease" }} />
+            </div>
+          </div>
+          <div style={{ padding: "8px 12px 14px", maxHeight: 340, overflowY: "auto" }}>
+            {steps.map(step => {
+              const done = !!completedSteps[step.key];
+              return (
+                <div key={step.key}
+                  onClick={() => { if (!done && step.tab) onGoToTab(step.tab); }}
+                  onMouseEnter={e => { if (!done) e.currentTarget.style.background = "#f9fafb"; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}
+                  style={{ display: "flex", gap: 10, padding: "8px 6px", borderRadius: 8, cursor: done ? "default" : "pointer", transition: "background 0.1s" }}>
+                  <div style={{ width: 20, height: 20, borderRadius: 6, flexShrink: 0, marginTop: 1, border: done ? "none" : "2px solid #d1d5db", background: done ? C.brand : "transparent", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.2s" }}>
+                    {done && <span style={{ color: "#fff", fontSize: 12, fontWeight: 700 }}>✓</span>}
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: done ? "#9ca3af" : "#1a1a2e", textDecoration: done ? "line-through" : "none", lineHeight: 1.3 }}>{step.title}</div>
+                    {!done && <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 2, lineHeight: 1.4 }}>{step.description}</div>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ─── LOADING SCREEN ──────────────────────────────────────────────
 function LoadingScreen() {
   return (
@@ -2892,12 +3250,50 @@ export default function App() {
   const [scenarios, setScenarios] = useState([]);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [knowledgeRefreshKey, setKnowledgeRefreshKey] = useState(0);
+  const [currentModelId, setCurrentModelId] = useState(null);
+  const [currentModelName, setCurrentModelName] = useState("");
+  const [showHowItWorks, setShowHowItWorks] = useState(false);
+
+  // ── Onboarding state (per model, persisted in localStorage) ─────
+  const [onboardingState, setOnboardingState] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("databobiq_onboarding") || "{}"); }
+    catch { return {}; }
+  });
+  const [onboardingDismissed, setOnboardingDismissed] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("databobiq_onboarding_dismissed") || "{}"); }
+    catch { return {}; }
+  });
+  useEffect(() => { localStorage.setItem("databobiq_onboarding", JSON.stringify(onboardingState)); }, [onboardingState]);
+  const markOnboardingStep = (modelId, stepKey) => {
+    setOnboardingState(prev => ({ ...prev, [modelId]: { ...(prev[modelId] || {}), [stepKey]: true } }));
+  };
+  const dismissOnboarding = () => {
+    const updated = { ...onboardingDismissed, [currentModelId]: true };
+    setOnboardingDismissed(updated);
+    localStorage.setItem("databobiq_onboarding_dismissed", JSON.stringify(updated));
+  };
+
+  // ── Load models to auto-select ──────────────────────────────────
+  const { data: models = [], isLoading: modelsLoading } = useQuery({
+    queryKey: ["models"],
+    queryFn: listModels,
+    staleTime: 60_000,
+  });
+
+  // Auto-select if there's exactly one model (existing users)
+  useEffect(() => {
+    if (!currentModelId && models.length === 1) {
+      setCurrentModelId(models[0].id);
+      setCurrentModelName(models[0].name);
+    }
+  }, [models, currentModelId]);
 
   // ── Load datasets from API ──────────────────────────────────────
   const { data: schemaList = [], isLoading } = useQuery({
-    queryKey: ["datasets"],
+    queryKey: ["datasets", currentModelId],
     queryFn: getDatasets,
     staleTime: 30_000,
+    enabled: !!currentModelId,
     refetchInterval: (query) => {
       const list = query.state.data ?? [];
       const now = Date.now();
@@ -3054,8 +3450,31 @@ export default function App() {
     });
   }
 
+  // ── Auto-mark explore_actuals when user opens Actuals with data ─
+  useEffect(() => {
+    if (tab === "actuals" && currentModelId && schemaList.length > 0) {
+      markOnboardingStep(currentModelId, "explore_actuals");
+    }
+  }, [tab, schemaList.length, currentModelId]);
+
+  if (modelsLoading) return <LoadingScreen />;
+  if (!currentModelId) {
+    return (
+      <>
+        <ModelLandingPage
+          models={models}
+          loading={modelsLoading}
+          onSelect={(id, name) => { setCurrentModelId(id); setCurrentModelName(name); }}
+          onRefresh={() => queryClient.invalidateQueries({ queryKey: ["models"] })}
+          onShowHowItWorks={() => setShowHowItWorks(true)}
+        />
+        {showHowItWorks && <HowItWorksModal onClose={() => setShowHowItWorks(false)} />}
+      </>
+    );
+  }
+
   if (isLoading) return <LoadingScreen />;
-  if (!schemaList.length) return <UploadScreen onUploaded={() => queryClient.invalidateQueries({ queryKey: ["datasets"] })} />;
+  if (!schemaList.length) return <UploadScreen onUploaded={() => queryClient.invalidateQueries({ queryKey: ["datasets", currentModelId] })} />;
 
   const datasetLabel = factDataset ? `${factDataset.dataset.name} · ${schemaList.length} dataset${schemaList.length !== 1 ? "s" : ""}` : "";
 
@@ -3080,6 +3499,14 @@ export default function App() {
           <span style={{ fontSize: 17, fontWeight: 800, color: C.text, letterSpacing: "-0.3px" }}>
             data<span style={{ color: C.brand }}>Bob</span>IQ
           </span>
+          <button onClick={() => setCurrentModelId(null)}
+            onMouseEnter={e => e.currentTarget.style.background = "#f0f9fd"}
+            onMouseLeave={e => e.currentTarget.style.background = "none"}
+            style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, color: C.brand, fontWeight: 600, display: "flex", alignItems: "center", gap: 4, padding: "4px 8px", borderRadius: 6, marginLeft: 4 }}>
+            ← Models
+          </button>
+          <span style={{ color: "#d1d5db", fontSize: 18, fontWeight: 300 }}>/</span>
+          <span style={{ fontSize: 14, fontWeight: 600, color: C.text, maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{currentModelName}</span>
         </div>
 
         <div style={{ display: "flex", gap: 2, background: C.bg, borderRadius: 10, padding: 3 }}>
@@ -3099,7 +3526,15 @@ export default function App() {
           ))}
         </div>
 
-        <div style={{ fontSize: 12, color: C.textMuted, fontWeight: 500 }}>{datasetLabel}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ fontSize: 12, color: C.textMuted, fontWeight: 500 }}>{datasetLabel}</div>
+          <button onClick={() => setShowHowItWorks(true)}
+            onMouseEnter={e => e.currentTarget.style.color = C.brand}
+            onMouseLeave={e => e.currentTarget.style.color = C.textMuted}
+            style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, color: C.textMuted, padding: "4px 8px", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 4, borderRadius: 6, transition: "color 0.15s" }}>
+            📖 Guide
+          </button>
+        </div>
       </div>
 
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
@@ -3113,9 +3548,21 @@ export default function App() {
       <UploadModal
         isOpen={uploadOpen}
         onClose={() => setUploadOpen(false)}
-        onUploaded={() => queryClient.invalidateQueries({ queryKey: ["datasets"] })}
+        onUploaded={() => queryClient.invalidateQueries({ queryKey: ["datasets", currentModelId] })}
         schemaList={schemaList}
+        modelId={currentModelId}
       />
+      {/* ── Onboarding checklist ── */}
+      {currentModelId && !onboardingDismissed[currentModelId] && (
+        <OnboardingChecklist
+          steps={ONBOARDING_STEPS}
+          completedSteps={getCompletedSteps(currentModelId, schemaList, scenarios, [], [], onboardingState)}
+          onDismiss={dismissOnboarding}
+          onGoToTab={setTab}
+        />
+      )}
+      {/* ── How It Works modal ── */}
+      {showHowItWorks && <HowItWorksModal onClose={() => setShowHowItWorks(false)} />}
     </div>
   );
 }
