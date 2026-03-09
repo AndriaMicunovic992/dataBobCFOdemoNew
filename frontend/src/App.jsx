@@ -2879,7 +2879,7 @@ function fmtSize(bytes) {
   return (bytes / (1024 * 1024)).toFixed(1) + " MB";
 }
 
-function UploadScreen({ onUploaded }) {
+function UploadScreen({ onUploaded, modelId = null }) {
   const [dragging, setDragging] = useState(false);
   const [uploadingFiles, setUploadingFiles] = useState([]); // [{name,size,status,error}]
   const inputRef = useRef(null);
@@ -2892,7 +2892,7 @@ function UploadScreen({ onUploaded }) {
     for (let i = 0; i < files.length; i++) {
       setUploadingFiles(p => p.map((f, idx) => idx === i ? { ...f, status: "uploading" } : f));
       try {
-        await uploadFile(files[i]);
+        await uploadFile(files[i], modelId);
         setUploadingFiles(p => p.map((f, idx) => idx === i ? { ...f, status: "done" } : f));
       } catch (e) {
         setUploadingFiles(p => p.map((f, idx) => idx === i ? { ...f, status: "error", error: e.message ?? "Upload failed" } : f));
@@ -3904,7 +3904,7 @@ export default function App() {
   }
 
   if (isLoading) return <LoadingScreen />;
-  if (!schemaList.length) return <UploadScreen onUploaded={() => queryClient.invalidateQueries({ queryKey: ["datasets", currentModelId] })} />;
+  if (!schemaList.length) return <UploadScreen modelId={currentModelId} onUploaded={() => queryClient.invalidateQueries({ queryKey: ["datasets", currentModelId] })} />;
 
   const datasetLabel = factDataset ? `${factDataset.dataset.name} · ${schemaList.length} dataset${schemaList.length !== 1 ? "s" : ""}` : "";
 
