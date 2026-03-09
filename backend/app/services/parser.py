@@ -17,18 +17,89 @@ _Utf8: type = getattr(pl, "String", None) or pl.Utf8  # type: ignore[attr-define
 
 
 def _normalize_utf8_view(df: pl.DataFrame) -> pl.DataFrame:
-    """Cast Utf8View / LargeUtf8 columns to String before further processing.
+    """Cast Utf8View / LargeUtf8 / Boolean columns to String before further processing.
 
     Newer fastexcel / Polars-Arrow may produce ``Utf8View`` columns whose
-    direct casting to numeric/date types raises errors.  Normalising to the
-    canonical String type first makes all downstream casts work.
+    direct casting to numeric/date types raises errors.  Boolean columns inferred
+    from string-like values (Yes/No, TRUE/FALSE, X) are also normalised to String
+    so that ``safe_infer_types`` can re-cast them correctly.
     """
     casts = []
     for col_name in df.columns:
         dtype_repr = str(df[col_name].dtype)
-        if "View" in dtype_repr or "LargeUtf8" in dtype_repr:
+        if "View" in dtype_repr or "LargeUtf8" in dtype_repr or "Boolean" in dtype_repr:
             casts.append(pl.col(col_name).cast(pl.String, strict=False).alias(col_name))
     return df.with_columns(casts) if casts else df
+
+
+_BOOL_TRUE = frozenset({"true", "yes", "1", "y", "x"})
+_BOOL_FALSE = frozenset({"false", "no", "0", "n", ""})
+_BOOL_ALL = _BOOL_TRUE | _BOOL_FALSE
+
+
+def safe_infer_types(df: pl.DataFrame) -> pl.DataFrame:
+    """Re-infer types for all-String columns: boolean → numeric → date → string.
+
+    Uses strict=False throughout so bad values become null instead of raising.
+    """
+    new_cols: list[pl.Series] = []
+    for col_name in df.columns:
+        col = df[col_name]
+        dtype_repr = str(col.dtype)
+        if "String" not in dtype_repr and "Utf8" not in dtype_repr:
+            new_cols.append(col)
+            continue
+
+        stripped = col.str.strip_chars()
+        non_null = stripped.drop_nulls()
+
+        if non_null.len() == 0:
+            new_cols.append(stripped.alias(col_name))
+            continue
+
+        # ── Try boolean ──
+        lower = stripped.str.to_lowercase()
+        non_null_lower = lower.drop_nulls()
+        if non_null_lower.is_in(list(_BOOL_ALL)).all():
+            bool_col = lower.map_elements(
+                lambda v: True if v in _BOOL_TRUE else (False if v in _BOOL_FALSE else None),
+                return_dtype=pl.Boolean,
+            )
+            new_cols.append(bool_col.alias(col_name))
+            continue
+
+        # ── Try numeric ──
+        try:
+            numeric = stripped.cast(pl.Float64, strict=False)
+            extra_nulls = numeric.null_count() - col.null_count()
+            if non_null.len() > 0 and extra_nulls / non_null.len() < 0.1:
+                valid = numeric.drop_nulls()
+                if valid.len() > 0 and (valid == valid.floor()).all():
+                    new_cols.append(numeric.cast(pl.Int64, strict=False).alias(col_name))
+                else:
+                    new_cols.append(numeric.alias(col_name))
+                continue
+        except Exception:
+            pass
+
+        # ── Try date ──
+        date_cast = None
+        for fmt in ["%Y-%m-%d", "%d.%m.%Y", "%m/%d/%Y", "%d/%m/%Y", "%Y%m%d"]:
+            try:
+                candidate = stripped.str.to_date(fmt, strict=False)
+                extra_nulls = candidate.null_count() - col.null_count()
+                if non_null.len() > 0 and extra_nulls / non_null.len() < 0.1:
+                    date_cast = candidate.alias(col_name)
+                    break
+            except Exception:
+                continue
+        if date_cast is not None:
+            new_cols.append(date_cast)
+            continue
+
+        new_cols.append(stripped.alias(col_name))
+
+    return pl.DataFrame(new_cols)
 
 # ---------------------------------------------------------------------------
 # Public data classes
@@ -516,8 +587,11 @@ def _read_excel(file_path: Path) -> dict[str, pl.DataFrame]:
             sheets = raw
         else:
             sheets = {file_path.stem: raw}
-        # Normalise Utf8View columns produced by newer fastexcel/Arrow
-        sheets = {name: _normalize_utf8_view(df) for name, df in sheets.items()}
+        # Normalise Utf8View / Boolean columns, then re-infer types safely
+        sheets = {
+            name: safe_infer_types(_normalize_utf8_view(df))
+            for name, df in sheets.items()
+        }
         logger.info("Read %d sheet(s) from %s via calamine", len(sheets), file_path.name)
     except Exception as exc:
         logger.warning("calamine failed (%s), falling back to openpyxl", exc)
@@ -535,12 +609,14 @@ def _read_excel(file_path: Path) -> dict[str, pl.DataFrame]:
                 if not data_rows:
                     sheets[sheet_name] = pl.DataFrame({h: [] for h in headers})
                     continue
-                # Build column-oriented dict to avoid dtype issues
-                col_data: dict[str, list] = {h: [] for h in headers}
+                # Stringify all values so Polars cannot infer problematic types
+                col_data: dict[str, list[str | None]] = {h: [] for h in headers}
                 for row in data_rows:
                     for h, val in zip(headers, row):
-                        col_data[h].append(val)
-                sheets[sheet_name] = pl.DataFrame(col_data, infer_schema_length=1000)
+                        col_data[h].append(None if val is None else str(val))
+                sheets[sheet_name] = safe_infer_types(
+                    pl.DataFrame(col_data, schema={h: pl.String for h in headers})
+                )
             logger.info("Read %d sheet(s) from %s via openpyxl", len(sheets), file_path.name)
         except Exception as exc2:
             raise RuntimeError(f"Could not parse Excel file {file_path.name}: {exc2}") from exc2
@@ -565,15 +641,16 @@ def _read_csv(file_path: Path) -> dict[str, pl.DataFrame]:
         logger.debug("Detected CSV separator %r in %s", sep, file_path.name)
 
     try:
+        # Read everything as String first to avoid Polars Boolean/Utf8View cast issues,
+        # then re-infer types ourselves via safe_infer_types.
         df = pl.read_csv(
             str(file_path),
             separator=sep,
-            infer_schema_length=1000,
-            try_parse_dates=True,
+            infer_schema_length=0,  # all columns as String
             encoding="utf8-lossy",
-            null_values=["", "NA", "N/A", "#N/A", "null", "NULL", "-"],
+            null_values=["NA", "N/A", "#N/A", "null", "NULL", "-"],
         )
-        df = _normalize_utf8_view(df)
+        df = safe_infer_types(df)
         logger.info("Read CSV %s: %d rows × %d cols", file_path.name, len(df), len(df.columns))
         return {file_path.stem: df}
     except Exception as exc:
