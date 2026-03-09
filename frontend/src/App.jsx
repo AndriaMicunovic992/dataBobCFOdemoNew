@@ -2981,7 +2981,9 @@ function ModelLandingPage({ models, loading, onSelect, onRefresh, onShowHowItWor
       <link href={FONT_URL} rel="stylesheet" />
       {/* ── TOP BAR ── */}
       <div style={{ background: "#fff", borderBottom: "1px solid #eef0f2", padding: "14px 32px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <img src="/IQLogo.png" alt="dataBobIQ" style={{ height: 40, objectFit: "contain" }} />
+        <span style={{ fontSize: 20, fontWeight: 800, color: "#1a1a2e", letterSpacing: "-0.5px" }}>
+          data<span style={{ color: "#6abbd9" }}>Bob</span>IQ
+        </span>
         <button onClick={onShowHowItWorks}
           onMouseEnter={e => { e.currentTarget.style.borderColor = C.brand; e.currentTarget.style.color = C.brand; }}
           onMouseLeave={e => { e.currentTarget.style.borderColor = "#e0e3e8"; e.currentTarget.style.color = "#4b5563"; }}
@@ -2997,7 +2999,7 @@ function ModelLandingPage({ models, loading, onSelect, onRefresh, onShowHowItWor
           <img
             src="/IQLogo.png"
             alt=""
-            style={{ height: "110%", maxWidth: "none", objectFit: "contain", opacity: 0.06, userSelect: "none" }}
+            style={{ height: "110%", maxWidth: "none", objectFit: "contain", opacity: 0.12, userSelect: "none" }}
           />
         </div>
         <div style={{ position: "relative", zIndex: 1, maxWidth: 960, margin: "0 auto" }}>
@@ -3008,7 +3010,7 @@ function ModelLandingPage({ models, loading, onSelect, onRefresh, onShowHowItWor
           <div style={{ display: "flex", gap: 0, marginTop: 28, overflowX: "auto", paddingBottom: 4 }}>
             {FLOW_STEPS.map((step, i) => (
               <div key={i} style={{ display: "flex", alignItems: "center" }}>
-                <div style={{ background: "#fff", borderRadius: 12, padding: "16px 18px", minWidth: 155, maxWidth: 175, border: "1px solid #e8ebee", boxShadow: "0 1px 3px rgba(0,0,0,0.03)" }}>
+                <div style={{ background: "rgba(255,255,255,0.65)", backdropFilter: "blur(4px)", WebkitBackdropFilter: "blur(4px)", borderRadius: 12, padding: "16px 18px", minWidth: 155, maxWidth: 175, border: "1px solid rgba(232,235,238,0.5)", boxShadow: "0 1px 3px rgba(0,0,0,0.03)" }}>
                   <div style={{ fontSize: 22, marginBottom: 8 }}>{step.icon}</div>
                   <div style={{ fontSize: 13, fontWeight: 700, color: "#1a1a2e", marginBottom: 4 }}>{step.title}</div>
                   <div style={{ fontSize: 11, color: "#6b7280", lineHeight: 1.45 }}>{step.desc}</div>
