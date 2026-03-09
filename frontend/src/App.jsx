@@ -2891,6 +2891,34 @@ function UploadScreen({ onUploaded }) {
   );
 }
 
+// ─── FLOW CARD HELPERS ────────────────────────────────────────────
+function FlowCard({ step }) {
+  return (
+    <div style={{
+      background: "rgba(255,255,255,0.35)",
+      backdropFilter: "blur(6px)",
+      WebkitBackdropFilter: "blur(6px)",
+      borderRadius: 12,
+      padding: "18px 20px",
+      width: 185,
+      minHeight: 170,
+      border: "1px solid rgba(255,255,255,0.4)",
+      boxShadow: "0 1px 3px rgba(0,0,0,0.03)",
+      display: "flex",
+      flexDirection: "column",
+    }}>
+      <div style={{ fontSize: 22, marginBottom: 10 }}>{step.icon}</div>
+      <div style={{ fontSize: 13, fontWeight: 700, color: "#1a1a2e", marginBottom: 6 }}>{step.title}</div>
+      <div style={{ fontSize: 11, color: "#6b7280", lineHeight: 1.5, flex: 1 }}>{step.desc}</div>
+    </div>
+  );
+}
+function FlowArrow() {
+  return (
+    <div style={{ color: "#c4c9cf", fontSize: 16, padding: "0 6px", flexShrink: 0 }}>→</div>
+  );
+}
+
 // ─── MODEL LANDING PAGE ───────────────────────────────────────────
 const FLOW_STEPS = [
   { icon: "📤", title: "Upload Data", desc: "Drop your Excel files — GL entries, chart of accounts, invoice lines. dataBobIQ auto-detects the structure." },
@@ -2965,7 +2993,7 @@ function ModelLandingPage({ models, loading, onSelect, onRefresh, onShowHowItWor
           <img
             src="/IQLogo.png"
             alt=""
-            style={{ height: "110%", maxWidth: "none", objectFit: "contain", opacity: 0.12, userSelect: "none" }}
+            style={{ height: "110%", maxWidth: "none", objectFit: "contain", opacity: 0.18, userSelect: "none" }}
           />
         </div>
         <div style={{ position: "relative", zIndex: 1, maxWidth: 960, margin: "0 auto" }}>
@@ -2973,19 +3001,30 @@ function ModelLandingPage({ models, loading, onSelect, onRefresh, onShowHowItWor
           <p style={{ fontSize: 14, color: "#6b7280", marginTop: 6, lineHeight: 1.5, maxWidth: 560 }}>
             Each model is an independent workspace with its own data, scenarios, and AI-learned knowledge. Here's how it works:
           </p>
-          <div style={{ display: "flex", gap: 0, marginTop: 28, overflowX: "auto", paddingBottom: 4 }}>
-            {FLOW_STEPS.map((step, i) => (
-              <div key={i} style={{ display: "flex", alignItems: "center" }}>
-                <div style={{ background: "rgba(255,255,255,0.65)", backdropFilter: "blur(4px)", WebkitBackdropFilter: "blur(4px)", borderRadius: 12, padding: "16px 18px", minWidth: 155, maxWidth: 175, border: "1px solid rgba(232,235,238,0.5)", boxShadow: "0 1px 3px rgba(0,0,0,0.03)" }}>
-                  <div style={{ fontSize: 22, marginBottom: 8 }}>{step.icon}</div>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: "#1a1a2e", marginBottom: 4 }}>{step.title}</div>
-                  <div style={{ fontSize: 11, color: "#6b7280", lineHeight: 1.45 }}>{step.desc}</div>
+          {/* ── Flow steps — U-shape around logo ── */}
+          <div style={{ marginTop: 32, display: "flex", flexDirection: "column", alignItems: "center", gap: 16 }}>
+            {/* Top row: 3 cards */}
+            <div style={{ display: "flex", justifyContent: "center", gap: 12, width: "100%" }}>
+              {FLOW_STEPS.slice(0, 3).map((step, i) => (
+                <div key={i} style={{ display: "flex", alignItems: "center" }}>
+                  <FlowCard step={step} />
+                  {i < 2 && <FlowArrow />}
                 </div>
-                {i < FLOW_STEPS.length - 1 && (
-                  <div style={{ color: "#c4c9cf", fontSize: 16, padding: "0 6px", flexShrink: 0 }}>→</div>
-                )}
-              </div>
-            ))}
+              ))}
+            </div>
+            {/* Down arrow */}
+            <div style={{ display: "flex", justifyContent: "center", width: "100%" }}>
+              <span style={{ color: "#c4c9cf", fontSize: 16, transform: "rotate(90deg)" }}>→</span>
+            </div>
+            {/* Bottom row: 2 cards, centered */}
+            <div style={{ display: "flex", justifyContent: "center", gap: 12 }}>
+              {FLOW_STEPS.slice(3).map((step, i) => (
+                <div key={i + 3} style={{ display: "flex", alignItems: "center" }}>
+                  <FlowCard step={step} />
+                  {i < 1 && <FlowArrow />}
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       </div>
@@ -2995,7 +3034,7 @@ function ModelLandingPage({ models, loading, onSelect, onRefresh, onShowHowItWor
         {loading && models.length === 0 && (
           <div style={{ textAlign: "center", padding: 60, color: "#9ca3af", fontSize: 13 }}>Loading models...</div>
         )}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 20 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 20, justifyItems: "stretch" }}>
           {models.map(m => {
             const isHovered = hoveredId === m.id;
             const isEditing = editingId === m.id;
