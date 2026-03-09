@@ -282,7 +282,7 @@ function applyRules(data, rules, valF = "amount") {
 }
 
 // ─── FIELD MANAGER ──────────────────────────────────────────────
-function FieldManager({ label, allFields, selected, onChange, color = C.brand, single = false }) {
+function FieldManager({ label, allFields, selected, onChange, color = C.brand, single = false, fieldTableMap = null, factTableName = null }) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
   const ref = useRef(null);
@@ -293,6 +293,53 @@ function FieldManager({ label, allFields, selected, onChange, color = C.brand, s
   }, []);
   const available = allFields.filter(f => single ? true : !selected.includes(f))
     .filter(f => !search || f.toLowerCase().includes(search.toLowerCase()));
+
+  const renderFieldItems = () => {
+    if (!fieldTableMap || Object.keys(fieldTableMap).length === 0) {
+      return available.map(f => (
+        <div key={f} onClick={() => { onChange(single ? f : [...selected, f]); if (single) setOpen(false); }}
+          style={{ padding: "6px 8px", borderRadius: 6, cursor: "pointer", fontSize: 12, color: C.text }}
+          onMouseEnter={e => e.target.style.background = C.surfaceHover}
+          onMouseLeave={e => e.target.style.background = ""}>
+          {f.replace(/_/g, " ")}
+        </div>
+      ));
+    }
+    const groups = {};
+    for (const f of available) {
+      const table = fieldTableMap[f] || "Other";
+      if (!groups[table]) groups[table] = [];
+      groups[table].push(f);
+    }
+    const sortedTables = Object.keys(groups).sort((a, b) => {
+      if (a === factTableName) return -1;
+      if (b === factTableName) return 1;
+      if (a === "_calendar") return 1;
+      if (b === "_calendar") return -1;
+      return a.localeCompare(b);
+    });
+    const items = [];
+    sortedTables.forEach((table, ti) => {
+      items.push(
+        <div key={`h-${table}`} style={{
+          padding: "5px 8px 3px", fontSize: 9, fontWeight: 700, color: C.brand,
+          textTransform: "uppercase", letterSpacing: "0.6px", background: C.bg,
+          borderTop: ti > 0 ? `1px solid ${C.borderLight}` : "none", marginTop: ti > 0 ? 2 : 0,
+        }}>
+          {table.replace(/_/g, " ")}
+        </div>
+      );
+      groups[table].forEach(f => items.push(
+        <div key={f} onClick={() => { onChange(single ? f : [...selected, f]); if (single) setOpen(false); }}
+          style={{ padding: "6px 8px 6px 14px", borderRadius: 6, cursor: "pointer", fontSize: 12, color: C.text }}
+          onMouseEnter={e => e.currentTarget.style.background = C.surfaceHover}
+          onMouseLeave={e => e.currentTarget.style.background = ""}>
+          {f.replace(/_/g, " ")}
+        </div>
+      ));
+    });
+    return items;
+  };
 
   return (
     <div style={{ marginBottom: 4 }}>
@@ -310,14 +357,7 @@ function FieldManager({ label, allFields, selected, onChange, color = C.brand, s
             <div style={S.dropdown}>
               <input autoFocus style={{ ...S.input, marginBottom: 6, fontSize: 11 }} placeholder="Search fields..." value={search} onChange={e => setSearch(e.target.value)} />
               {available.length === 0 && <div style={{ fontSize: 11, color: C.textMuted, padding: 6 }}>No fields</div>}
-              {available.map(f => (
-                <div key={f} onClick={() => { onChange(single ? f : [...selected, f]); if (single) setOpen(false); }}
-                  style={{ padding: "6px 8px", borderRadius: 6, cursor: "pointer", fontSize: 12, color: C.text }}
-                  onMouseEnter={e => e.target.style.background = C.surfaceHover}
-                  onMouseLeave={e => e.target.style.background = ""}>
-                  {f.replace(/_/g, " ")}
-                </div>
-              ))}
+              {renderFieldItems()}
             </div>
           )}
         </div>
@@ -327,7 +367,7 @@ function FieldManager({ label, allFields, selected, onChange, color = C.brand, s
 }
 
 // ─── FILTER MANAGER ─────────────────────────────────────────────
-function FilterManager({ baseline, allFields, filters, setFilters }) {
+function FilterManager({ baseline, allFields, filters, setFilters, fieldTableMap = null, factTableName = null }) {
   const [addOpen, setAddOpen] = useState(false);
   const [addSearch, setAddSearch] = useState("");
   const [expandedF, setExpandedF] = useState(null);
@@ -341,6 +381,53 @@ function FilterManager({ baseline, allFields, filters, setFilters }) {
     document.addEventListener("mousedown", h);
     return () => document.removeEventListener("mousedown", h);
   }, []);
+
+  const renderAddItems = () => {
+    if (!fieldTableMap || Object.keys(fieldTableMap).length === 0) {
+      return availableFs.map(f => (
+        <div key={f} onClick={() => { setFilters({ ...filters, [f]: [] }); setAddOpen(false); }}
+          style={{ padding: "6px 8px", borderRadius: 6, cursor: "pointer", fontSize: 12, color: C.text }}
+          onMouseEnter={e => e.target.style.background = C.surfaceHover}
+          onMouseLeave={e => e.target.style.background = ""}>
+          {f.replace(/_/g, " ")}
+        </div>
+      ));
+    }
+    const groups = {};
+    for (const f of availableFs) {
+      const table = fieldTableMap[f] || "Other";
+      if (!groups[table]) groups[table] = [];
+      groups[table].push(f);
+    }
+    const sortedTables = Object.keys(groups).sort((a, b) => {
+      if (a === factTableName) return -1;
+      if (b === factTableName) return 1;
+      if (a === "_calendar") return 1;
+      if (b === "_calendar") return -1;
+      return a.localeCompare(b);
+    });
+    const items = [];
+    sortedTables.forEach((table, ti) => {
+      items.push(
+        <div key={`h-${table}`} style={{
+          padding: "5px 8px 3px", fontSize: 9, fontWeight: 700, color: C.brand,
+          textTransform: "uppercase", letterSpacing: "0.6px", background: C.bg,
+          borderTop: ti > 0 ? `1px solid ${C.borderLight}` : "none", marginTop: ti > 0 ? 2 : 0,
+        }}>
+          {table.replace(/_/g, " ")}
+        </div>
+      );
+      groups[table].forEach(f => items.push(
+        <div key={f} onClick={() => { setFilters({ ...filters, [f]: [] }); setAddOpen(false); }}
+          style={{ padding: "6px 8px 6px 14px", borderRadius: 6, cursor: "pointer", fontSize: 12, color: C.text }}
+          onMouseEnter={e => e.currentTarget.style.background = C.surfaceHover}
+          onMouseLeave={e => e.currentTarget.style.background = ""}>
+          {f.replace(/_/g, " ")}
+        </div>
+      ));
+    });
+    return items;
+  };
 
   return (
     <div style={{ marginBottom: 4 }}>
@@ -383,14 +470,7 @@ function FilterManager({ baseline, allFields, filters, setFilters }) {
           {addOpen && (
             <div style={S.dropdown}>
               <input autoFocus style={{ ...S.input, marginBottom: 6, fontSize: 11 }} placeholder="Search fields..." value={addSearch} onChange={e => setAddSearch(e.target.value)} />
-              {availableFs.map(f => (
-                <div key={f} onClick={() => { setFilters({ ...filters, [f]: [] }); setAddOpen(false); }}
-                  style={{ padding: "6px 8px", borderRadius: 6, cursor: "pointer", fontSize: 12, color: C.text }}
-                  onMouseEnter={e => e.target.style.background = C.surfaceHover}
-                  onMouseLeave={e => e.target.style.background = ""}>
-                  {f.replace(/_/g, " ")}
-                </div>
-              ))}
+              {renderAddItems()}
             </div>
           )}
         </div>
@@ -1448,6 +1528,24 @@ function SavedViewsBar({ savedViews, onSave, onLoad, onDelete }) {
 function ActualsView({ baseline, schema, modelId = null }) {
   const dims = useMemo(() => getDimFields(baseline), [baseline]);
   const measures = useMemo(() => getMeasureFields(baseline, schema), [baseline, schema]);
+
+  const fieldTableMap = useMemo(() => {
+    const map = {};
+    for (const [tableName, tinfo] of Object.entries(schema || {})) {
+      for (const col of tinfo.columns || []) map[col.name] = tableName;
+    }
+    for (const f of ["year", "_year", "quarter", "month", "_month", "month_name", "month_year", "_period"]) {
+      if (!(f in map)) map[f] = "_calendar";
+    }
+    return map;
+  }, [schema]);
+
+  const factTableName = useMemo(() => {
+    for (const [tableName, tinfo] of Object.entries(schema || {})) {
+      if (tinfo.isFact) return tableName;
+    }
+    return null;
+  }, [schema]);
   const [rowFs, setRowFs] = useState(() => []);
   const [colF, setColF] = useState("");
   const [valF, setValF] = useState(() => "");
@@ -1483,11 +1581,11 @@ function ActualsView({ baseline, schema, modelId = null }) {
           onDelete={id => setSavedViews(prev => prev.filter(v => v.id !== id))}
         />
         <div style={{ display: "grid", gridTemplateColumns: "2fr 2fr 1fr", gap: 14, marginBottom: 10 }}>
-          <FieldManager label="Row Fields" allFields={dims} selected={rowFs} onChange={setRowFs} color={C.brand} />
-          <FieldManager label="Column Field" allFields={dims.filter(f => !rowFs.includes(f))} selected={colF} onChange={setColF} color={C.purple} single />
-          <FieldManager label="Value" allFields={measures} selected={valF} onChange={setValF} color={C.green} single />
+          <FieldManager label="Row Fields" allFields={dims} selected={rowFs} onChange={setRowFs} color={C.brand} fieldTableMap={fieldTableMap} factTableName={factTableName} />
+          <FieldManager label="Column Field" allFields={dims.filter(f => !rowFs.includes(f))} selected={colF} onChange={setColF} color={C.purple} single fieldTableMap={fieldTableMap} factTableName={factTableName} />
+          <FieldManager label="Value" allFields={measures} selected={valF} onChange={setValF} color={C.green} single fieldTableMap={fieldTableMap} factTableName={factTableName} />
         </div>
-        <FilterManager baseline={baseline} allFields={dims} filters={filters} setFilters={setFilters} />
+        <FilterManager baseline={baseline} allFields={dims} filters={filters} setFilters={setFilters} fieldTableMap={fieldTableMap} factTableName={factTableName} />
       </div>
       <div style={S.card}>
         <div style={S.cardT}>Pivot Table</div>
@@ -1605,6 +1703,24 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
   const dims = useMemo(() => getDimFields(baseline), [baseline]);
   const measures = useMemo(() => getMeasureFields(baseline, schema), [baseline, schema]);
   const basePeriods = useMemo(() => getUniq(baseline, "_period"), [baseline]);
+
+  const fieldTableMap = useMemo(() => {
+    const map = {};
+    for (const [tableName, tinfo] of Object.entries(schema || {})) {
+      for (const col of tinfo.columns || []) map[col.name] = tableName;
+    }
+    for (const f of ["year", "_year", "quarter", "month", "_month", "month_name", "month_year", "_period"]) {
+      if (!(f in map)) map[f] = "_calendar";
+    }
+    return map;
+  }, [schema]);
+
+  const factTableName = useMemo(() => {
+    for (const [tableName, tinfo] of Object.entries(schema || {})) {
+      if (tinfo.isFact) return tableName;
+    }
+    return null;
+  }, [schema]);
 
   const [active, setActive] = useState(new Set());
   const [editId, setEditId] = useState(null);
@@ -1985,11 +2101,11 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
           onDelete={id => setSavedViews(prev => prev.filter(v => v.id !== id))}
         />
         <div style={{ display: "grid", gridTemplateColumns: "2fr 2fr 1fr", gap: 14, marginBottom: 10 }}>
-          <FieldManager label="Row Fields" allFields={dims} selected={rowFs} onChange={setRowFs} color={C.brand} />
-          <FieldManager label="Column Field" allFields={dims.filter(f => !rowFs.includes(f))} selected={colF} onChange={setColF} color={C.purple} single />
-          <FieldManager label="Value" allFields={measures} selected={valF} onChange={setValF} color={C.green} single />
+          <FieldManager label="Row Fields" allFields={dims} selected={rowFs} onChange={setRowFs} color={C.brand} fieldTableMap={fieldTableMap} factTableName={factTableName} />
+          <FieldManager label="Column Field" allFields={dims.filter(f => !rowFs.includes(f))} selected={colF} onChange={setColF} color={C.purple} single fieldTableMap={fieldTableMap} factTableName={factTableName} />
+          <FieldManager label="Value" allFields={measures} selected={valF} onChange={setValF} color={C.green} single fieldTableMap={fieldTableMap} factTableName={factTableName} />
         </div>
-        <FilterManager baseline={baseline} allFields={dims} filters={filters} setFilters={setFilters} />
+        <FilterManager baseline={baseline} allFields={dims} filters={filters} setFilters={setFilters} fieldTableMap={fieldTableMap} factTableName={factTableName} />
       </div>
 
       {scenarios.length > 0 && (
