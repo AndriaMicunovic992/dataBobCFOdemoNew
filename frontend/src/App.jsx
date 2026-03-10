@@ -3899,10 +3899,21 @@ export default function App() {
   }, [schemaList]);
 
   // ── Fact dataset (first dataset with a measure column) ──────────
-  const factDataset = useMemo(
-    () => schemaList.find(sr => sr.columns.some(c => c.column_role === "measure")) ?? schemaList[0],
-    [schemaList]
-  );
+  const factDataset = useMemo(() => {
+    console.log("[factDataset] schemaList length:", schemaList.length);
+    if (schemaList.length) {
+      for (const sr of schemaList) {
+        const measures = sr.columns.filter(c => c.column_role === "measure");
+        console.log(`[factDataset] ${sr.dataset.name}: ${sr.columns.length} cols, ${measures.length} measures, id=${sr.dataset.id}`);
+      }
+    }
+    const found = schemaList.find(sr => sr.columns.some(c => c.column_role === "measure"));
+    // Skip the calendar as a fallback — prefer any real data table
+    const fallback = schemaList.find(sr => sr.dataset.name !== "_calendar") ?? schemaList[0];
+    const result = found ?? fallback;
+    console.log("[factDataset] selected:", result?.dataset?.name, "id:", result?.dataset?.id);
+    return result;
+  }, [schemaList]);
 
   // ── Onboarding trigger — fire once per dataset when profiling completes ──
   const [pendingOnboardingId, setPendingOnboardingId] = useState(null);
@@ -3945,8 +3956,11 @@ export default function App() {
   const relIds = useMemo(() => relationships.map(r => r.id), [relationships]);
   const { data: apiBaseline, isLoading: baselineLoading } = useQuery({
     queryKey: ["baseline", factDataset?.dataset.id, relIds, currentModelId],
-    queryFn: () => getBaseline(factDataset.dataset.id, relIds, currentModelId),
-    enabled: !!factDataset?.dataset.id,
+    queryFn: () => {
+      console.log("[baseline] Fetching for dataset", factDataset.dataset.id, "model", currentModelId, "relIds", relIds.length);
+      return getBaseline(factDataset.dataset.id, relIds, currentModelId);
+    },
+    enabled: !!factDataset?.dataset.id && !!currentModelId,
     staleTime: 60_000,
   });
   const baseline = useMemo(() => apiBaseline ? apiBaselineToRows(apiBaseline) : [], [apiBaseline]);
@@ -4125,12 +4139,12 @@ export default function App() {
         <div style={{ flex: 1, overflow: "auto", padding: 24 }}>
           {tab === "schema" && <SchemaView schema={schema} setSchema={handleSetSchema} relationships={relationships} setRelationships={handleSetRelationships} onOpenUpload={() => setUploadOpen(true)} factDatasetId={factDataset?.dataset.id} knowledgeRefreshKey={knowledgeRefreshKey} modelId={currentModelId} />}
           {tab === "actuals" && (
-            baselineLoading
+            baselineLoading || (!apiBaseline && !!factDataset?.dataset.id)
               ? <div style={{ textAlign: "center", padding: 40, color: C.textMuted }}>Loading data…</div>
               : <ActualsView baseline={baseline} schema={schema} modelId={currentModelId} />
           )}
           {tab === "scenarios" && (
-            baselineLoading
+            baselineLoading || (!apiBaseline && !!factDataset?.dataset.id)
               ? <div style={{ textAlign: "center", padding: 40, color: C.textMuted }}>Loading data…</div>
               : <ScenariosView baseline={baseline} scenarios={scenarios} setScenarios={handleSetScenarios} schema={schema} factDatasetId={factDataset?.dataset.id} relIds={relIds} modelId={currentModelId} />
           )}
