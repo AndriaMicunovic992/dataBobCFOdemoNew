@@ -3900,19 +3900,10 @@ export default function App() {
 
   // ── Fact dataset (first dataset with a measure column) ──────────
   const factDataset = useMemo(() => {
-    console.log("[factDataset] schemaList length:", schemaList.length);
-    if (schemaList.length) {
-      for (const sr of schemaList) {
-        const measures = sr.columns.filter(c => c.column_role === "measure");
-        console.log(`[factDataset] ${sr.dataset.name}: ${sr.columns.length} cols, ${measures.length} measures, id=${sr.dataset.id}`);
-      }
-    }
     const found = schemaList.find(sr => sr.columns.some(c => c.column_role === "measure"));
     // Skip the calendar as a fallback — prefer any real data table
     const fallback = schemaList.find(sr => sr.dataset.name !== "_calendar") ?? schemaList[0];
-    const result = found ?? fallback;
-    console.log("[factDataset] selected:", result?.dataset?.name, "id:", result?.dataset?.id);
-    return result;
+    return found ?? fallback;
   }, [schemaList]);
 
   // ── Onboarding trigger — fire once per dataset when profiling completes ──
@@ -3956,13 +3947,11 @@ export default function App() {
   const relIds = useMemo(() => relationships.map(r => r.id), [relationships]);
   const { data: apiBaseline, isLoading: baselineLoading, isError: baselineError, error: baselineErr, refetch: refetchBaseline } = useQuery({
     queryKey: ["baseline", factDataset?.dataset.id, relIds, currentModelId],
-    queryFn: () => {
-      console.log("[baseline] Fetching for dataset", factDataset.dataset.id, "model", currentModelId, "relIds", relIds.length);
-      return getBaseline(factDataset.dataset.id, relIds, currentModelId);
-    },
+    queryFn: () => getBaseline(factDataset.dataset.id, relIds, currentModelId),
     enabled: !!factDataset?.dataset.id && !!currentModelId,
     staleTime: 60_000,
-    retry: 1,
+    retry: 2,
+    retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 5000),
   });
   const baseline = useMemo(() => apiBaseline ? apiBaselineToRows(apiBaseline) : [], [apiBaseline]);
 

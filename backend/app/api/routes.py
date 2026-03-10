@@ -771,6 +771,10 @@ async def build_model_baseline(model_id: str, body: BaselineRequest, db: AsyncSe
     if fact_ds is None:
         raise HTTPException(status_code=404, detail="Fact dataset not found")
     df = await _build_baseline_df(fact_ds, body.relationships, db)
+    drop_cols = [c for c in df.columns if c == "_row_id"]
+    if drop_cols:
+        df = df.drop(drop_cols)
+    gc.collect()
     col_names = df.columns
     row_count = df.height
 
@@ -778,11 +782,17 @@ async def build_model_baseline(model_id: str, body: BaselineRequest, db: AsyncSe
         try:
             yield '{"columns":' + json.dumps(col_names) + ',"data":['
             first = True
+            batch: list[str] = []
             for row in df.iter_rows():
-                if not first:
-                    yield ","
-                yield json.dumps([_json_safe(v) for v in row])
+                prefix = "" if first else ","
+                batch.append(prefix + json.dumps([_json_safe(v) for v in row]))
                 first = False
+                if len(batch) >= 500:
+                    yield "".join(batch)
+                    batch.clear()
+            if batch:
+                yield "".join(batch)
+                batch.clear()
             yield '],"row_count":' + str(row_count) + "}"
         finally:
             del df
@@ -1610,6 +1620,10 @@ async def build_baseline(body: BaselineRequest, db: AsyncSession = Depends(get_d
         raise HTTPException(status_code=404, detail="Fact dataset not found")
 
     df = await _build_baseline_df(fact_ds, body.relationships, db)
+    drop_cols = [c for c in df.columns if c == "_row_id"]
+    if drop_cols:
+        df = df.drop(drop_cols)
+    gc.collect()
     col_names = df.columns
     row_count = df.height
 
@@ -1617,11 +1631,17 @@ async def build_baseline(body: BaselineRequest, db: AsyncSession = Depends(get_d
         try:
             yield '{"columns":' + json.dumps(col_names) + ',"data":['
             first = True
+            batch: list[str] = []
             for row in df.iter_rows():
-                if not first:
-                    yield ","
-                yield json.dumps([_json_safe(v) for v in row])
+                prefix = "" if first else ","
+                batch.append(prefix + json.dumps([_json_safe(v) for v in row]))
                 first = False
+                if len(batch) >= 500:
+                    yield "".join(batch)
+                    batch.clear()
+            if batch:
+                yield "".join(batch)
+                batch.clear()
             yield '],"row_count":' + str(row_count) + "}"
         finally:
             del df
