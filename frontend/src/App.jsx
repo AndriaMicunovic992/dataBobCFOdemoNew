@@ -1242,7 +1242,28 @@ function KnowledgePanel({ datasetId, knowledgeRefreshKey, modelId = null }) {
 function SchemaView({ schema, setSchema, relationships, setRelationships, onOpenUpload, factDatasetId, knowledgeRefreshKey, modelId = null }) {
   const [addRelOpen, setAddRelOpen] = useState(false);
   const [newRel, setNewRel] = useState({ from: "", to: "", fromCol: "", toCol: "" });
-  const [dismissedSuggestions, setDismissedSuggestions] = useState(new Set());
+  const dismissedKey = modelId ? `databobiq_dismissed_rels_${modelId}` : "databobiq_dismissed_rels";
+  const [dismissedSuggestions, setDismissedSuggestions] = useState(() => {
+    try {
+      const stored = localStorage.getItem(dismissedKey);
+      return stored ? new Set(JSON.parse(stored)) : new Set();
+    } catch { return new Set(); }
+  });
+
+  // Reset dismissed set when model changes (component may stay mounted)
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(dismissedKey);
+      setDismissedSuggestions(stored ? new Set(JSON.parse(stored)) : new Set());
+    } catch { setDismissedSuggestions(new Set()); }
+  }, [dismissedKey]);
+
+  // Persist dismissed set to localStorage
+  useEffect(() => {
+    try { localStorage.setItem(dismissedKey, JSON.stringify([...dismissedSuggestions])); }
+    catch { /* ignore */ }
+  }, [dismissedSuggestions, dismissedKey]);
+
   const tableNames = Object.keys(schema);
 
   // Collect AI-suggested relationships from all tables' aiNotes (deduped)
@@ -1254,7 +1275,9 @@ function SchemaView({ schema, setSchema, relationships, setRelationships, onOpen
         const key = `${r.source_table}|${r.source_column}|${r.target_table}|${r.target_column}`;
         if (seen.has(key) || dismissedSuggestions.has(key)) return false;
         seen.add(key);
-        return schema[r.source_table] && schema[r.target_table];
+        if (!schema[r.source_table] || !schema[r.target_table]) return false;
+        if (r.confidence === "low") return false;
+        return true;
       })
       .filter(r => !relationships.some(
         ex => (ex.from === r.source_table && ex.fromCol === r.source_column && ex.to === r.target_table && ex.toCol === r.target_column) ||
@@ -3886,13 +3909,11 @@ export default function App() {
 
   // ── Baseline from API ───────────────────────────────────────────
   const relIds = useMemo(() => relationships.map(r => r.id), [relationships]);
-  const { data: apiBaseline } = useQuery({
+  const { data: apiBaseline, isLoading: baselineLoading } = useQuery({
     queryKey: ["baseline", factDataset?.dataset.id, relIds, currentModelId],
     queryFn: () => getBaseline(factDataset.dataset.id, relIds, currentModelId),
-    // Only fetch when the user actually opens a tab that needs the data.
-    // This avoids a heavy join query on every model selection.
-    enabled: !!factDataset?.dataset.id && (tab === "actuals" || tab === "scenarios"),
-    staleTime: 30_000,
+    enabled: !!factDataset?.dataset.id,
+    staleTime: 60_000,
   });
   const baseline = useMemo(() => apiBaseline ? apiBaselineToRows(apiBaseline) : [], [apiBaseline]);
 
@@ -4069,8 +4090,16 @@ export default function App() {
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
         <div style={{ flex: 1, overflow: "auto", padding: 24 }}>
           {tab === "schema" && <SchemaView schema={schema} setSchema={handleSetSchema} relationships={relationships} setRelationships={handleSetRelationships} onOpenUpload={() => setUploadOpen(true)} factDatasetId={factDataset?.dataset.id} knowledgeRefreshKey={knowledgeRefreshKey} modelId={currentModelId} />}
-          {tab === "actuals" && <ActualsView baseline={baseline} schema={schema} modelId={currentModelId} />}
-          {tab === "scenarios" && <ScenariosView baseline={baseline} scenarios={scenarios} setScenarios={handleSetScenarios} schema={schema} factDatasetId={factDataset?.dataset.id} relIds={relIds} modelId={currentModelId} />}
+          {tab === "actuals" && (
+            baselineLoading
+              ? <div style={{ textAlign: "center", padding: 40, color: C.textMuted }}>Loading data…</div>
+              : <ActualsView baseline={baseline} schema={schema} modelId={currentModelId} />
+          )}
+          {tab === "scenarios" && (
+            baselineLoading
+              ? <div style={{ textAlign: "center", padding: 40, color: C.textMuted }}>Loading data…</div>
+              : <ScenariosView baseline={baseline} scenarios={scenarios} setScenarios={handleSetScenarios} schema={schema} factDatasetId={factDataset?.dataset.id} relIds={relIds} modelId={currentModelId} />
+          )}
         </div>
         <ChatPanel baseline={baseline} scenarios={scenarios} setScenarios={handleSetScenarios} setActiveTab={setTab} activeTab={tab} datasetId={factDataset?.dataset.id} onKnowledgeSaved={() => setKnowledgeRefreshKey(k => k + 1)} pendingOnboardingId={pendingOnboardingId} onOnboardingConsumed={() => setPendingOnboardingId(null)} modelId={currentModelId} />
       </div>
