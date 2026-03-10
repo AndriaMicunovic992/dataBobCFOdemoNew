@@ -99,7 +99,21 @@ export async function getBaseline(factDatasetId, relationshipIds = [], modelId =
   const path = modelId
     ? `/models/${modelId}/datasets/baseline`
     : '/datasets/baseline'
-  return req(path, { method: 'POST', ...json(body) })
+
+  const res = await fetch(BASE + path, { method: 'POST', ...json(body) })
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`
+    try { const b = await res.json(); msg = b.detail ?? msg } catch { /* skip */ }
+    throw new Error(msg)
+  }
+
+  const text = await res.text()
+  try {
+    return JSON.parse(text)
+  } catch (e) {
+    console.error('[getBaseline] JSON parse failed. Response length:', text.length, 'Last 100 chars:', text.slice(-100))
+    throw new Error(`Baseline response truncated (${text.length} bytes received). The server may have run out of memory. Try refreshing.`)
+  }
 }
 
 // ── Relationships ────────────────────────────────────────────────────────────
