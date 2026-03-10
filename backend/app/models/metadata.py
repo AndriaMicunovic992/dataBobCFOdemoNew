@@ -29,6 +29,7 @@ class Model(Base):
     updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), onupdate=func.now(), nullable=True
     )
+    settings: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=dict)
 
     datasets: Mapped[list["Dataset"]] = relationship(
         "Dataset", back_populates="model", cascade="all, delete-orphan"

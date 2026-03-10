@@ -42,6 +42,11 @@ export async function deleteModel(id) {
   return req(`/models/${id}`, { method: 'DELETE' })
 }
 
+/** Update model settings (dismissed suggestions, saved views, etc.) */
+export async function updateModelSettings(modelId, settings) {
+  return req(`/models/${modelId}`, { method: 'PATCH', ...json({ settings }) })
+}
+
 // ── Upload ──────────────────────────────────────────────────────────────────
 
 /** Upload an xlsx/xls/csv/tsv file scoped to a model.  Returns list[DatasetResponse]. */
