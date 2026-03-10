@@ -252,6 +252,9 @@ async def _build_baseline_df(
             df = df.join(dim_df, left_on=fact_col, right_on=dim_col, how="left")
         except Exception as exc:
             logger.warning("Join on %s.%s failed: %s", dim_dataset.name, dim_col, exc)
+        # Free dimension DataFrame immediately after join
+        del dim_df
+        gc.collect()
 
     return df
 
@@ -770,19 +773,25 @@ async def build_model_baseline(model_id: str, body: BaselineRequest, db: AsyncSe
     fact_ds = result.scalar_one_or_none()
     if fact_ds is None:
         raise HTTPException(status_code=404, detail="Fact dataset not found")
-    df = await _build_baseline_df(fact_ds, body.relationships, db)
-    drop_cols = [c for c in df.columns if c == "_row_id"]
-    if drop_cols:
-        df = df.drop(drop_cols)
-    gc.collect()
+    try:
+        df = await _build_baseline_df(fact_ds, body.relationships, db)
+    except Exception as exc:
+        logger.error("Baseline build failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Failed to build baseline: {exc}")
+    # Drop internal columns the frontend doesn't need
+    if "_row_id" in df.columns:
+        df = df.drop("_row_id")
     col_names = df.columns
     row_count = df.height
+    # Free memory from join intermediates before streaming
+    gc.collect()
 
     async def _stream():
+        nonlocal df
         try:
             yield '{"columns":' + json.dumps(col_names) + ',"data":['
             first = True
-            batch: list[str] = []
+            batch = []
             for row in df.iter_rows():
                 prefix = "" if first else ","
                 batch.append(prefix + json.dumps([_json_safe(v) for v in row]))
@@ -795,7 +804,10 @@ async def build_model_baseline(model_id: str, body: BaselineRequest, db: AsyncSe
                 batch.clear()
             yield '],"row_count":' + str(row_count) + "}"
         finally:
-            del df
+            try:
+                del df
+            except Exception:
+                pass
             gc.collect()
 
     return StreamingResponse(_stream(), media_type="application/json")
@@ -1618,20 +1630,24 @@ async def build_baseline(body: BaselineRequest, db: AsyncSession = Depends(get_d
     fact_ds = result.scalar_one_or_none()
     if fact_ds is None:
         raise HTTPException(status_code=404, detail="Fact dataset not found")
-
-    df = await _build_baseline_df(fact_ds, body.relationships, db)
-    drop_cols = [c for c in df.columns if c == "_row_id"]
-    if drop_cols:
-        df = df.drop(drop_cols)
-    gc.collect()
+    try:
+        df = await _build_baseline_df(fact_ds, body.relationships, db)
+    except Exception as exc:
+        logger.error("Baseline build failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Failed to build baseline: {exc}")
+    # Drop internal columns the frontend doesn't need
+    if "_row_id" in df.columns:
+        df = df.drop("_row_id")
     col_names = df.columns
     row_count = df.height
+    gc.collect()
 
     async def _stream():
+        nonlocal df
         try:
             yield '{"columns":' + json.dumps(col_names) + ',"data":['
             first = True
-            batch: list[str] = []
+            batch = []
             for row in df.iter_rows():
                 prefix = "" if first else ","
                 batch.append(prefix + json.dumps([_json_safe(v) for v in row]))
@@ -1644,7 +1660,10 @@ async def build_baseline(body: BaselineRequest, db: AsyncSession = Depends(get_d
                 batch.clear()
             yield '],"row_count":' + str(row_count) + "}"
         finally:
-            del df
+            try:
+                del df
+            except Exception:
+                pass
             gc.collect()
 
     return StreamingResponse(_stream(), media_type="application/json")
