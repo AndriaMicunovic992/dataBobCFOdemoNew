@@ -1325,7 +1325,7 @@ async def update_model_relationship(
     result = await db.execute(
         select(DatasetRelationship).where(
             DatasetRelationship.id == rel_id,
-            DatasetRelationship.model_id == model_id,
+            (DatasetRelationship.model_id == model_id) | (DatasetRelationship.model_id.is_(None)),
         )
     )
     rel = result.scalar_one_or_none()
@@ -1356,7 +1356,7 @@ async def delete_model_relationship(model_id: str, rel_id: str, db: AsyncSession
     result = await db.execute(
         select(DatasetRelationship).where(
             DatasetRelationship.id == rel_id,
-            DatasetRelationship.model_id == model_id,
+            (DatasetRelationship.model_id == model_id) | (DatasetRelationship.model_id.is_(None)),
         )
     )
     rel = result.scalar_one_or_none()
