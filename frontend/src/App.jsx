@@ -3920,7 +3920,7 @@ export default function App() {
 
   // ── Baseline from API ───────────────────────────────────────────
   const relIds = useMemo(() => relationships.map(r => r.id), [relationships]);
-  const { data: apiBaseline, isLoading: baselineLoading } = useQuery({
+  const { data: apiBaseline, isLoading: baselineLoading, isError: baselineError, error: baselineErr, refetch: refetchBaseline } = useQuery({
     queryKey: ["baseline", factDataset?.dataset.id, relIds, currentModelId],
     queryFn: () => {
       console.log("[baseline] Fetching for dataset", factDataset.dataset.id, "model", currentModelId, "relIds", relIds.length);
@@ -3928,6 +3928,7 @@ export default function App() {
     },
     enabled: !!factDataset?.dataset.id && !!currentModelId,
     staleTime: 60_000,
+    retry: 1,
   });
   const baseline = useMemo(() => apiBaseline ? apiBaselineToRows(apiBaseline) : [], [apiBaseline]);
 
@@ -4105,14 +4106,24 @@ export default function App() {
         <div style={{ flex: 1, overflow: "auto", padding: 24 }}>
           {tab === "schema" && <SchemaView schema={schema} setSchema={handleSetSchema} relationships={relationships} setRelationships={handleSetRelationships} onOpenUpload={() => setUploadOpen(true)} factDatasetId={factDataset?.dataset.id} knowledgeRefreshKey={knowledgeRefreshKey} modelId={currentModelId} />}
           {tab === "actuals" && (
-            baselineLoading || (!apiBaseline && !!factDataset?.dataset.id)
-              ? <div style={{ textAlign: "center", padding: 40, color: C.textMuted }}>Loading data…</div>
-              : <ActualsView baseline={baseline} schema={schema} modelId={currentModelId} />
+            baselineError
+              ? <div style={{ textAlign: "center", padding: 40, color: C.textMuted }}>
+                  <div>Failed to load data: {baselineErr?.message ?? "Unknown error"}</div>
+                  <button onClick={() => refetchBaseline()} style={{ marginTop: 12, padding: "6px 16px", cursor: "pointer" }}>Retry</button>
+                </div>
+              : baselineLoading || (!apiBaseline && !!factDataset?.dataset.id)
+                ? <div style={{ textAlign: "center", padding: 40, color: C.textMuted }}>Loading data…</div>
+                : <ActualsView baseline={baseline} schema={schema} modelId={currentModelId} />
           )}
           {tab === "scenarios" && (
-            baselineLoading || (!apiBaseline && !!factDataset?.dataset.id)
-              ? <div style={{ textAlign: "center", padding: 40, color: C.textMuted }}>Loading data…</div>
-              : <ScenariosView baseline={baseline} scenarios={scenarios} setScenarios={handleSetScenarios} schema={schema} factDatasetId={factDataset?.dataset.id} relIds={relIds} modelId={currentModelId} />
+            baselineError
+              ? <div style={{ textAlign: "center", padding: 40, color: C.textMuted }}>
+                  <div>Failed to load data: {baselineErr?.message ?? "Unknown error"}</div>
+                  <button onClick={() => refetchBaseline()} style={{ marginTop: 12, padding: "6px 16px", cursor: "pointer" }}>Retry</button>
+                </div>
+              : baselineLoading || (!apiBaseline && !!factDataset?.dataset.id)
+                ? <div style={{ textAlign: "center", padding: 40, color: C.textMuted }}>Loading data…</div>
+                : <ScenariosView baseline={baseline} scenarios={scenarios} setScenarios={handleSetScenarios} schema={schema} factDatasetId={factDataset?.dataset.id} relIds={relIds} modelId={currentModelId} />
           )}
         </div>
         <ChatPanel baseline={baseline} scenarios={scenarios} setScenarios={handleSetScenarios} setActiveTab={setTab} activeTab={tab} datasetId={factDataset?.dataset.id} onKnowledgeSaved={() => setKnowledgeRefreshKey(k => k + 1)} pendingOnboardingId={pendingOnboardingId} onOnboardingConsumed={() => setPendingOnboardingId(null)} modelId={currentModelId} />
