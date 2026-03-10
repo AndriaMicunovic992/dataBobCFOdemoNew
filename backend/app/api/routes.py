@@ -680,6 +680,7 @@ async def list_models(db: AsyncSession = Depends(get_db)):
             scenario_count=sc_count_r.scalar() or 0,
             created_at=m.created_at,
             updated_at=m.updated_at,
+            settings=m.settings,
         ))
     return summaries
 
@@ -720,6 +721,8 @@ async def update_model(model_id: str, body: ModelUpdate, db: AsyncSession = Depe
         m.description = body.description
     if body.status is not None:
         m.status = body.status
+    if body.settings is not None:
+        m.settings = body.settings
     await db.commit()
     await db.refresh(m)
     return ModelResponse.model_validate(m)

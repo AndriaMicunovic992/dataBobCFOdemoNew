@@ -21,6 +21,7 @@ class ModelUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
     status: str | None = None  # active | archived
+    settings: dict[str, Any] | None = None
 
 
 class ModelSummary(BaseModel):
@@ -32,6 +33,7 @@ class ModelSummary(BaseModel):
     scenario_count: int = 0
     created_at: datetime
     updated_at: datetime | None = None
+    settings: dict[str, Any] | None = None
 
     model_config = {"from_attributes": True}
 
@@ -43,6 +45,7 @@ class ModelResponse(BaseModel):
     status: str
     created_at: datetime
     updated_at: datetime | None = None
+    settings: dict[str, Any] | None = None
 
     model_config = {"from_attributes": True}
 

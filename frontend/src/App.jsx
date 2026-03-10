@@ -12,6 +12,7 @@ import {
   getScenarios, createScenario, updateScenario, deleteScenario, computeScenario,
   getKnowledge, createKnowledge, updateKnowledge, deleteKnowledge,
   listModels, createModel, updateModel, deleteModel,
+  updateModelSettings,
 } from "./api.js";
 
 // ─── THEME ──────────────────────────────────────────────────────
@@ -1239,30 +1240,20 @@ function KnowledgePanel({ datasetId, knowledgeRefreshKey, modelId = null }) {
   );
 }
 
-function SchemaView({ schema, setSchema, relationships, setRelationships, onOpenUpload, factDatasetId, knowledgeRefreshKey, modelId = null }) {
+function SchemaView({ schema, setSchema, relationships, setRelationships, onOpenUpload, factDatasetId, knowledgeRefreshKey, modelId = null, modelSettings = {}, saveModelSettings }) {
   const [addRelOpen, setAddRelOpen] = useState(false);
   const [newRel, setNewRel] = useState({ from: "", to: "", fromCol: "", toCol: "" });
-  const dismissedKey = modelId ? `databobiq_dismissed_rels_${modelId}` : "databobiq_dismissed_rels";
-  const [dismissedSuggestions, setDismissedSuggestions] = useState(() => {
-    try {
-      const stored = localStorage.getItem(dismissedKey);
-      return stored ? new Set(JSON.parse(stored)) : new Set();
-    } catch { return new Set(); }
-  });
 
-  // Reset dismissed set when model changes (component may stay mounted)
-  useEffect(() => {
-    try {
-      const stored = localStorage.getItem(dismissedKey);
-      setDismissedSuggestions(stored ? new Set(JSON.parse(stored)) : new Set());
-    } catch { setDismissedSuggestions(new Set()); }
-  }, [dismissedKey]);
-
-  // Persist dismissed set to localStorage
-  useEffect(() => {
-    try { localStorage.setItem(dismissedKey, JSON.stringify([...dismissedSuggestions])); }
-    catch { /* ignore */ }
-  }, [dismissedSuggestions, dismissedKey]);
+  const dismissedSuggestions = useMemo(
+    () => new Set(modelSettings.dismissed_rels || []),
+    [modelSettings.dismissed_rels]
+  );
+  const setDismissedSuggestions = useCallback((updater) => {
+    const current = new Set(modelSettings.dismissed_rels || []);
+    const next = typeof updater === "function" ? updater(current) : updater;
+    const arr = [...next];
+    saveModelSettings(prev => ({ ...prev, dismissed_rels: arr }));
+  }, [modelSettings, saveModelSettings]);
 
   const tableNames = Object.keys(schema);
 
@@ -1548,7 +1539,7 @@ function SavedViewsBar({ savedViews, onSave, onLoad, onDelete }) {
 // ═══════════════════════════════════════════════════════════════
 // ACTUALS VIEW
 // ═══════════════════════════════════════════════════════════════
-function ActualsView({ baseline, schema, modelId = null }) {
+function ActualsView({ baseline, schema, modelId = null, modelSettings = {}, saveModelSettings }) {
   const dims = useMemo(() => getDimFields(baseline), [baseline]);
   const measures = useMemo(() => getMeasureFields(baseline, schema), [baseline, schema]);
 
@@ -1575,20 +1566,12 @@ function ActualsView({ baseline, schema, modelId = null }) {
   const [filters, setFilters] = useState({});
   const filtered = useMemo(() => applyFilters(baseline, filters), [baseline, filters]);
 
-  const viewsKey = modelId ? `databobiq_saved_views_actuals_${modelId}` : "databobiq_saved_views_actuals";
-  const [savedViews, setSavedViews] = useState(() => {
-    try { const v = localStorage.getItem(viewsKey); return v ? JSON.parse(v) : []; }
-    catch { return []; }
-  });
-  useEffect(() => {
-    if (!modelId) return;
-    try { const v = localStorage.getItem(viewsKey); setSavedViews(v ? JSON.parse(v) : []); }
-    catch { setSavedViews([]); }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [modelId]);
-  useEffect(() => {
-    localStorage.setItem(viewsKey, JSON.stringify(savedViews));
-  }, [savedViews, viewsKey]);
+  const savedViews = useMemo(() => modelSettings.actuals_views || [], [modelSettings.actuals_views]);
+  const setSavedViews = useCallback((updater) => {
+    const current = modelSettings.actuals_views || [];
+    const next = typeof updater === "function" ? updater(current) : updater;
+    saveModelSettings(prev => ({ ...prev, actuals_views: next }));
+  }, [modelSettings, saveModelSettings]);
 
   return (
     <div>
@@ -1722,7 +1705,7 @@ function mergeWithCalendar(dataVals, field) {
   return [...new Set([...dataVals, ...calVals])].sort();
 }
 
-function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetId, relIds, modelId = null }) {
+function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetId, relIds, modelId = null, modelSettings = {}, saveModelSettings }) {
   const dims = useMemo(() => getDimFields(baseline), [baseline]);
   const measures = useMemo(() => getMeasureFields(baseline, schema), [baseline, schema]);
   const basePeriods = useMemo(() => getUniq(baseline, "_period"), [baseline]);
@@ -1752,20 +1735,12 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
   const [valF, setValF] = useState(() => "");
   const [filters, setFilters] = useState({});
 
-  const scViewsKey = modelId ? `databobiq_saved_views_scenario_${modelId}` : "databobiq_saved_views_scenario";
-  const [savedViews, setSavedViews] = useState(() => {
-    try { const v = localStorage.getItem(scViewsKey); return v ? JSON.parse(v) : []; }
-    catch { return []; }
-  });
-  useEffect(() => {
-    if (!modelId) return;
-    try { const v = localStorage.getItem(scViewsKey); setSavedViews(v ? JSON.parse(v) : []); }
-    catch { setSavedViews([]); }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [modelId]);
-  useEffect(() => {
-    localStorage.setItem(scViewsKey, JSON.stringify(savedViews));
-  }, [savedViews, scViewsKey]);
+  const savedViews = useMemo(() => modelSettings.scenario_views || [], [modelSettings.scenario_views]);
+  const setSavedViews = useCallback((updater) => {
+    const current = modelSettings.scenario_views || [];
+    const next = typeof updater === "function" ? updater(current) : updater;
+    saveModelSettings(prev => ({ ...prev, scenario_views: next }));
+  }, [modelSettings, saveModelSettings]);
 
   const [newRule, setNewRule] = useState({ name: "", type: "multiplier", factor: 1.05, offset: 0, filters: {}, periodFrom: "", periodTo: "", distribution: "use_base" });
   const [ruleFilterFields, setRuleFilterFields] = useState([]);
@@ -3823,6 +3798,7 @@ export default function App() {
   const [knowledgeRefreshKey, setKnowledgeRefreshKey] = useState(0);
   const [currentModelId, setCurrentModelId] = useState(null);
   const [currentModelName, setCurrentModelName] = useState("");
+  const [modelSettings, setModelSettings] = useState({});
   const [showHowItWorks, setShowHowItWorks] = useState(false);
   const [showTechDetails, setShowTechDetails] = useState(false);
 
@@ -3861,6 +3837,24 @@ export default function App() {
       setCurrentModelName(models[0].name);
     }
   }, [models]);
+
+  // Load model settings when model is selected
+  useEffect(() => {
+    if (!currentModelId || !models.length) return;
+    const model = models.find(m => m.id === currentModelId);
+    setModelSettings(model?.settings || {});
+  }, [currentModelId, models]);
+
+  const saveModelSettings = useCallback((updater) => {
+    setModelSettings(prev => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      // Persist to backend (fire-and-forget)
+      if (currentModelId) {
+        updateModelSettings(currentModelId, next).catch(console.error);
+      }
+      return next;
+    });
+  }, [currentModelId]);
 
   // ── Reset model-scoped state when switching models ──────────────
   const handleBackToModels = () => {
@@ -4127,7 +4121,7 @@ export default function App() {
 
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
         <div style={{ flex: 1, overflow: "auto", padding: 24 }}>
-          {tab === "schema" && <SchemaView schema={schema} setSchema={handleSetSchema} relationships={relationships} setRelationships={handleSetRelationships} onOpenUpload={() => setUploadOpen(true)} factDatasetId={factDataset?.dataset.id} knowledgeRefreshKey={knowledgeRefreshKey} modelId={currentModelId} />}
+          {tab === "schema" && <SchemaView schema={schema} setSchema={handleSetSchema} relationships={relationships} setRelationships={handleSetRelationships} onOpenUpload={() => setUploadOpen(true)} factDatasetId={factDataset?.dataset.id} knowledgeRefreshKey={knowledgeRefreshKey} modelId={currentModelId} modelSettings={modelSettings} saveModelSettings={saveModelSettings} />}
           {tab === "actuals" && (
             baselineError
               ? <div style={{ textAlign: "center", padding: 40, color: C.textMuted }}>
@@ -4136,7 +4130,7 @@ export default function App() {
                 </div>
               : baselineLoading || (!apiBaseline && !!factDataset?.dataset.id)
                 ? <div style={{ textAlign: "center", padding: 40, color: C.textMuted }}>Loading data…</div>
-                : <ActualsView baseline={baseline} schema={schema} modelId={currentModelId} />
+                : <ActualsView baseline={baseline} schema={schema} modelId={currentModelId} modelSettings={modelSettings} saveModelSettings={saveModelSettings} />
           )}
           {tab === "scenarios" && (
             baselineError
@@ -4146,7 +4140,7 @@ export default function App() {
                 </div>
               : baselineLoading || (!apiBaseline && !!factDataset?.dataset.id)
                 ? <div style={{ textAlign: "center", padding: 40, color: C.textMuted }}>Loading data…</div>
-                : <ScenariosView baseline={baseline} scenarios={scenarios} setScenarios={handleSetScenarios} schema={schema} factDatasetId={factDataset?.dataset.id} relIds={relIds} modelId={currentModelId} />
+                : <ScenariosView baseline={baseline} scenarios={scenarios} setScenarios={handleSetScenarios} schema={schema} factDatasetId={factDataset?.dataset.id} relIds={relIds} modelId={currentModelId} modelSettings={modelSettings} saveModelSettings={saveModelSettings} />
           )}
         </div>
         <ChatPanel baseline={baseline} scenarios={scenarios} setScenarios={handleSetScenarios} setActiveTab={setTab} activeTab={tab} datasetId={factDataset?.dataset.id} onKnowledgeSaved={() => setKnowledgeRefreshKey(k => k + 1)} pendingOnboardingId={pendingOnboardingId} onOnboardingConsumed={() => setPendingOnboardingId(null)} modelId={currentModelId} />
