@@ -199,63 +199,113 @@ async def _build_baseline_df(
     rel_refs: list[RelationshipRef],
     db: AsyncSession,
 ) -> pl.DataFrame:
-    """Join fact table with dimension tables for all specified relationships."""
+    """Join fact table with dimension tables, including chained dimension-to-dimension joins.
+    Traverses relationships breadth-first:
+      Level 0: fact table
+      Level 1: dimensions joined directly to fact
+      Level 2: dimensions joined to level-1 dimensions
+      ...up to MAX_JOIN_DEPTH levels.
+    """
+    MAX_JOIN_DEPTH = 5
     df = storage_svc.read_dataset(sync_engine, fact_dataset.table_name)
-
+    # Load all requested relationships up front
+    all_rels: list[DatasetRelationship] = []
     for ref in rel_refs:
         result = await db.execute(
             select(DatasetRelationship).where(DatasetRelationship.id == ref.rel_id)
         )
         rel = result.scalar_one_or_none()
-        if rel is None:
-            logger.warning("Relationship %s not found, skipping", ref.rel_id)
-            continue
-
-        # Determine which side is the fact (source) and which the dimension (target)
-        if rel.source_dataset_id == fact_dataset.id:
-            fact_col = rel.source_column
-            dim_dataset_id = rel.target_dataset_id
-            dim_col = rel.target_column
-        elif rel.target_dataset_id == fact_dataset.id:
-            fact_col = rel.target_column
-            dim_dataset_id = rel.source_dataset_id
-            dim_col = rel.source_column
-        else:
-            logger.warning("Relationship %s does not reference fact dataset, skipping", ref.rel_id)
-            continue
-
-        dim_result = await db.execute(select(Dataset).where(Dataset.id == dim_dataset_id))
-        dim_dataset = dim_result.scalar_one_or_none()
-        if dim_dataset is None:
-            continue
-
-        dim_df = storage_svc.read_dataset(sync_engine, dim_dataset.table_name)
-
-        # Avoid _row_id collision from dimension table
-        dim_df = dim_df.drop("_row_id", strict=False)
-
-        # Rename clashing non-join columns with table prefix
-        dim_name = dim_dataset.name
-        rename_map: dict[str, str] = {}
-        for c in dim_df.columns:
-            if c != dim_col and c in df.columns:
-                rename_map[c] = f"{dim_name}__{c}"
-        if rename_map:
-            dim_df = dim_df.rename(rename_map)
-
-        try:
-            # Cast join keys to Utf8 so type mismatches (e.g. pl.Date vs pl.Utf8) don't break the join
-            if df[fact_col].dtype != pl.Utf8:
-                df = df.with_columns(pl.col(fact_col).cast(pl.Utf8, strict=False))
-            if dim_df[dim_col].dtype != pl.Utf8:
-                dim_df = dim_df.with_columns(pl.col(dim_col).cast(pl.Utf8, strict=False))
-            df = df.join(dim_df, left_on=fact_col, right_on=dim_col, how="left")
-        except Exception as exc:
-            logger.warning("Join on %s.%s failed: %s", dim_dataset.name, dim_col, exc)
-        # Free dimension DataFrame immediately after join
-        del dim_df
-        gc.collect()
-
+        if rel is not None:
+            all_rels.append(rel)
+    # Cache dataset lookups to avoid repeated DB queries
+    ds_cache: dict[str, Dataset | None] = {fact_dataset.id: fact_dataset}
+    async def _get_dataset(ds_id: str) -> Dataset | None:
+        if ds_id not in ds_cache:
+            r = await db.execute(select(Dataset).where(Dataset.id == ds_id))
+            ds_cache[ds_id] = r.scalar_one_or_none()
+        return ds_cache[ds_id]
+    # Track which dataset IDs have been joined into the baseline
+    joined_dataset_ids: set[str] = {fact_dataset.id}
+    # Track which relationship IDs have been used (prevent re-use)
+    used_rel_ids: set[str] = set()
+    for _depth in range(MAX_JOIN_DEPTH):
+        joined_any = False
+        for rel in all_rels:
+            if rel.id in used_rel_ids:
+                continue
+            # Determine if one side is already in the baseline and the other is not
+            src_in = rel.source_dataset_id in joined_dataset_ids
+            tgt_in = rel.target_dataset_id in joined_dataset_ids
+            if src_in and tgt_in:
+                # Both sides already joined — skip (would create duplicate columns)
+                used_rel_ids.add(rel.id)
+                continue
+            if not src_in and not tgt_in:
+                # Neither side joined yet — can't join this one yet, maybe next pass
+                continue
+            # Exactly one side is in the baseline — join the other side
+            if src_in:
+                # Source is in baseline, target is the new dimension
+                join_col_in_baseline = rel.source_column
+                dim_dataset_id = rel.target_dataset_id
+                dim_join_col = rel.target_column
+            else:
+                # Target is in baseline, source is the new dimension
+                join_col_in_baseline = rel.target_column
+                dim_dataset_id = rel.source_dataset_id
+                dim_join_col = rel.source_column
+            # Check the join column actually exists in the current baseline
+            if join_col_in_baseline not in df.columns:
+                # The column might have been renamed with a prefix — search for it
+                found_col = None
+                for c in df.columns:
+                    if c.endswith("__" + join_col_in_baseline) or c == join_col_in_baseline:
+                        found_col = c
+                        break
+                if found_col is None:
+                    logger.warning(
+                        "Join column %r not found in baseline for rel %s, skipping",
+                        join_col_in_baseline, rel.id,
+                    )
+                    continue
+                join_col_in_baseline = found_col
+            dim_dataset = await _get_dataset(dim_dataset_id)
+            if dim_dataset is None:
+                used_rel_ids.add(rel.id)
+                continue
+            dim_df = storage_svc.read_dataset(sync_engine, dim_dataset.table_name)
+            # Drop _row_id from dimension
+            dim_df = dim_df.drop("_row_id", strict=False)
+            # Rename clashing non-join columns with table prefix
+            dim_name = dim_dataset.name
+            rename_map: dict[str, str] = {}
+            for c in dim_df.columns:
+                if c != dim_join_col and c in df.columns:
+                    rename_map[c] = f"{dim_name}__{c}"
+            if rename_map:
+                dim_df = dim_df.rename(rename_map)
+            try:
+                # Cast join keys to Utf8 for type-safe joining
+                if df[join_col_in_baseline].dtype != pl.Utf8:
+                    df = df.with_columns(pl.col(join_col_in_baseline).cast(pl.Utf8, strict=False))
+                if dim_df[dim_join_col].dtype != pl.Utf8:
+                    dim_df = dim_df.with_columns(pl.col(dim_join_col).cast(pl.Utf8, strict=False))
+                df = df.join(dim_df, left_on=join_col_in_baseline, right_on=dim_join_col, how="left")
+                joined_dataset_ids.add(dim_dataset_id)
+                joined_any = True
+                logger.info(
+                    "Joined %s via %s.%s = %s.%s (depth %d)",
+                    dim_name, "baseline", join_col_in_baseline, dim_name, dim_join_col, _depth,
+                )
+            except Exception as exc:
+                logger.warning("Join on %s.%s failed: %s", dim_dataset.name, dim_join_col, exc)
+            used_rel_ids.add(rel.id)
+            # Free dimension DataFrame immediately after join
+            del dim_df
+            gc.collect()
+        if not joined_any:
+            # No new joins possible — we're done
+            break
     return df
 
 
