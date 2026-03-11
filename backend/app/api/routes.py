@@ -1030,12 +1030,6 @@ async def model_chat(model_id: str, request: ChatRequest, db: AsyncSession = Dep
         )
     )
     all_rels = all_rel_result.scalars().all()
-    related_ids = {dataset.id}
-    for r in all_rels:
-        related_ids.add(r.source_dataset_id)
-        related_ids.add(r.target_dataset_id)
-
-    context = await build_agent_context(list(related_ids), db)
 
     all_rel_refs = [RelationshipRef(rel_id=r.id) for r in all_rels]
     try:
@@ -1044,14 +1038,18 @@ async def model_chat(model_id: str, request: ChatRequest, db: AsyncSession = Dep
         logger.warning("Failed to build baseline for chat tools: %s", exc)
         baseline_df = None
 
-    # Build dataset name → table name mapping for multi-table queries
+    # Include ALL model datasets in AI context so the agent can query any table
     all_ds_result = await db.execute(
         select(Dataset).where(
             (Dataset.model_id == model_id) | (Dataset.model_id.is_(None)),
             Dataset.status != "deleted",
         )
     )
-    all_table_names = {ds.name: ds.table_name for ds in all_ds_result.scalars().all()}
+    all_model_datasets = all_ds_result.scalars().all()
+    all_dataset_ids = [ds.id for ds in all_model_datasets]
+    all_table_names = {ds.name: ds.table_name for ds in all_model_datasets}
+
+    context = await build_agent_context(all_dataset_ids, db)
 
     return StreamingResponse(
         stream_chat(
@@ -2223,7 +2221,7 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
     if not settings.ANTHROPIC_API_KEY_CHAT:
         raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY_CHAT is not configured")
 
-    # Load all related dataset IDs (fact + any joined dimensions via relationships)
+    # Load relationships for the selected dataset (used for baseline join)
     all_rel_result = await db.execute(
         select(DatasetRelationship).where(
             (DatasetRelationship.source_dataset_id == dataset.id) |
@@ -2231,12 +2229,6 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
         )
     )
     all_rels = all_rel_result.scalars().all()
-    related_ids = {dataset.id}
-    for r in all_rels:
-        related_ids.add(r.source_dataset_id)
-        related_ids.add(r.target_dataset_id)
-
-    context = await build_agent_context(list(related_ids), db)
 
     # Build enriched baseline so chat tools can see dimension-joined columns
     all_rel_refs = [RelationshipRef(rel_id=r.id) for r in all_rels]
@@ -2246,13 +2238,25 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
         logger.warning("Failed to build baseline for chat tools: %s", exc)
         baseline_df = None
 
-    all_ds_result = await db.execute(
-        select(Dataset).where(Dataset.status != "deleted")
-    )
-    all_table_names = {ds.name: ds.table_name for ds in all_ds_result.scalars().all()}
-
-    # Resolve model_id from the dataset for knowledge queries
+    # Include ALL datasets (model-scoped or global) in AI context so the agent
+    # can see and query any fact table, not just the selected one.
     ds_model_id = dataset.model_id or ""
+    if ds_model_id:
+        all_ds_result = await db.execute(
+            select(Dataset).where(
+                (Dataset.model_id == ds_model_id) | (Dataset.model_id.is_(None)),
+                Dataset.status != "deleted",
+            )
+        )
+    else:
+        all_ds_result = await db.execute(
+            select(Dataset).where(Dataset.status != "deleted")
+        )
+    all_model_datasets = all_ds_result.scalars().all()
+    all_dataset_ids = [ds.id for ds in all_model_datasets]
+    all_table_names = {ds.name: ds.table_name for ds in all_model_datasets}
+
+    context = await build_agent_context(all_dataset_ids, db)
 
     return StreamingResponse(
         stream_chat(

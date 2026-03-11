@@ -76,6 +76,22 @@ trigger re-analysis via the `/reanalyze` endpoint.
 If this happens frequently, the tool descriptions may be ambiguous — Claude
 doesn't know when to stop. Clarify tool descriptions.
 
+### Chat agent can't see non-selected fact tables
+**Problem**: The chat agent could only query the fact table selected in the
+baseline selector. Other fact tables in the model were invisible — their schema
+wasn't included in the AI context, so the agent couldn't reference them.
+
+**Root cause**: Both `/chat` and `/models/{model_id}/chat` endpoints built the
+AI context using only `related_ids` (selected dataset + its joined dimensions).
+Other fact tables in the same model were excluded from `build_agent_context()`.
+
+**Fix** (applied): Changed both endpoints to pass ALL model dataset IDs to
+`build_agent_context()`, not just relationship-linked ones. The baseline_df is
+still built from the selected dataset's relationships (for dimension joins),
+but the AI context now describes every dataset in the model. The `query_data`
+tool already supported querying other tables via `_resolve_dataset()` +
+`all_table_names`, so no changes were needed in `chat.py`.
+
 ### Negative value sign convention
 **Problem**: In German accounting data, expenses are typically stored as negative
 values. "Increase costs by 300K" means offset = -300000 (more negative).
