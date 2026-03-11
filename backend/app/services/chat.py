@@ -593,6 +593,17 @@ def _tool_query_data(inp: dict, table_name: str, baseline_df: Any = None) -> dic
     if value_column not in df.columns:
         return {"error": f"Column '{value_column}' not found in dataset"}
 
+    # Guard: ensure value_column is numeric before attempting aggregation
+    col_dtype = df[value_column].dtype
+    if col_dtype not in (pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64, pl.Decimal):
+        numeric_cols = [
+            c for c in df.columns
+            if df[c].dtype in (pl.Float32, pl.Float64, pl.Int32, pl.Int64)
+            and c != "_row_id"
+        ]
+        hint = f" Available numeric columns: {numeric_cols}" if numeric_cols else ""
+        return {"error": f"Column '{value_column}' is not numeric (type: {col_dtype}). Choose a measure/numeric column for aggregation.{hint}"}
+
     valid_gb = [c for c in group_by if c in df.columns]
 
     agg_map = {"sum": "sum", "avg": "mean", "mean": "mean",
