@@ -1547,7 +1547,7 @@ function SavedViewsBar({ savedViews, onSave, onLoad, onDelete, factTableNames = 
 // ═══════════════════════════════════════════════════════════════
 // ACTUALS VIEW
 // ═══════════════════════════════════════════════════════════════
-function ActualsView({ baseline, schema, modelId = null, modelSettings = {}, saveModelSettings, factDatasetId = null, onSelectFact = null }) {
+function ActualsView({ baseline, schema, modelId = null, modelSettings = {}, saveModelSettings, factDatasetId = null, onSelectFact = null, factCandidates = [] }) {
   const dims = useMemo(() => getDimFields(baseline), [baseline]);
   const measures = useMemo(() => getMeasureFields(baseline, schema), [baseline, schema]);
 
@@ -1632,6 +1632,33 @@ function ActualsView({ baseline, schema, modelId = null, modelSettings = {}, sav
           onDelete={id => setSavedViews(prev => prev.filter(v => v.id !== id))}
           factTableNames={factTableNames}
         />
+        {/* Baseline selector — only shown when multiple fact tables exist */}
+        {factCandidates.length > 1 && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, padding: "6px 10px", background: C.brandLight, borderRadius: 8, border: `1px solid ${C.brand}22` }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: C.brand }}>Baseline:</span>
+            <select
+              value={factDatasetId || ""}
+              onChange={e => onSelectFact && onSelectFact(e.target.value)}
+              style={{
+                ...S.select,
+                fontSize: 12,
+                padding: "4px 8px",
+                fontWeight: 600,
+                color: C.brand,
+                border: `1px solid ${C.brand}44`,
+                background: "#fff",
+                borderRadius: 6,
+                maxWidth: 280,
+              }}
+            >
+              {factCandidates.map(sr => (
+                <option key={sr.dataset.id} value={sr.dataset.id}>
+                  {sr.dataset.name} ({sr.dataset.row_count.toLocaleString()} rows)
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
         <div style={{ display: "grid", gridTemplateColumns: "2fr 2fr 1fr", gap: 14, marginBottom: 10 }}>
           <FieldManager label="Row Fields" allFields={dims} selected={rowFs} onChange={setRowFs} color={C.brand} fieldTableMap={fieldTableMap} factTableName={factTableName} />
           <FieldManager label="Column Field" allFields={dims.filter(f => !rowFs.includes(f))} selected={colF} onChange={setColF} color={C.purple} single fieldTableMap={fieldTableMap} factTableName={factTableName} />
@@ -1751,7 +1778,7 @@ function mergeWithCalendar(dataVals, field) {
   return [...new Set([...dataVals, ...calVals])].sort();
 }
 
-function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetId, relIds, modelId = null, modelSettings = {}, saveModelSettings, onSelectFact = null }) {
+function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetId, relIds, modelId = null, modelSettings = {}, saveModelSettings, onSelectFact = null, factCandidates = [] }) {
   const dims = useMemo(() => getDimFields(baseline), [baseline]);
   const measures = useMemo(() => getMeasureFields(baseline, schema), [baseline, schema]);
   const basePeriods = useMemo(() => getUniq(baseline, "_period"), [baseline]);
@@ -2147,6 +2174,32 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
           onDelete={id => setSavedViews(prev => prev.filter(v => v.id !== id))}
           factTableNames={factTableNames}
         />
+        {factCandidates.length > 1 && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, padding: "6px 10px", background: C.brandLight, borderRadius: 8, border: `1px solid ${C.brand}22` }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: C.brand }}>Baseline:</span>
+            <select
+              value={factDatasetId || ""}
+              onChange={e => onSelectFact && onSelectFact(e.target.value)}
+              style={{
+                ...S.select,
+                fontSize: 12,
+                padding: "4px 8px",
+                fontWeight: 600,
+                color: C.brand,
+                border: `1px solid ${C.brand}44`,
+                background: "#fff",
+                borderRadius: 6,
+                maxWidth: 280,
+              }}
+            >
+              {factCandidates.map(sr => (
+                <option key={sr.dataset.id} value={sr.dataset.id}>
+                  {sr.dataset.name} ({sr.dataset.row_count.toLocaleString()} rows)
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
         <div style={{ display: "grid", gridTemplateColumns: "2fr 2fr 1fr", gap: 14, marginBottom: 10 }}>
           <FieldManager label="Row Fields" allFields={dims} selected={rowFs} onChange={setRowFs} color={C.brand} fieldTableMap={fieldTableMap} factTableName={factTableName} />
           <FieldManager label="Column Field" allFields={dims.filter(f => !rowFs.includes(f))} selected={colF} onChange={setColF} color={C.purple} single fieldTableMap={fieldTableMap} factTableName={factTableName} />
@@ -4172,37 +4225,7 @@ export default function App() {
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          {factCandidates.length > 1 ? (
-            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <span style={{ fontSize: 11, color: C.textMuted, fontWeight: 500 }}>Fact table:</span>
-              <select
-                value={factDataset?.dataset.id || ""}
-                onChange={e => setSelectedFactId(e.target.value)}
-                style={{
-                  ...S.select,
-                  fontSize: 12,
-                  padding: "4px 8px",
-                  fontWeight: 600,
-                  color: C.brand,
-                  border: `1px solid ${C.brand}44`,
-                  background: C.brandLight,
-                  borderRadius: 6,
-                  maxWidth: 220,
-                }}
-              >
-                {factCandidates.map(sr => (
-                  <option key={sr.dataset.id} value={sr.dataset.id}>
-                    {sr.dataset.name} ({sr.dataset.row_count.toLocaleString()} rows)
-                  </option>
-                ))}
-              </select>
-              <span style={{ fontSize: 11, color: C.textMuted }}>
-                · {schemaList.length} table{schemaList.length !== 1 ? "s" : ""}
-              </span>
-            </div>
-          ) : (
-            <div style={{ fontSize: 12, color: C.textMuted, fontWeight: 500 }}>{datasetLabel}</div>
-          )}
+          <div style={{ fontSize: 12, color: C.textMuted, fontWeight: 500 }}>{datasetLabel}</div>
           <button onClick={() => setShowHowItWorks(true)}
             onMouseEnter={e => e.currentTarget.style.color = C.brand}
             onMouseLeave={e => e.currentTarget.style.color = C.textMuted}
@@ -4229,7 +4252,7 @@ export default function App() {
                 </div>
               : baselineLoading || (!apiBaseline && !!factDataset?.dataset.id)
                 ? <div style={{ textAlign: "center", padding: 40, color: C.textMuted }}>Loading data…</div>
-                : <ActualsView baseline={baseline} schema={schema} modelId={currentModelId} modelSettings={modelSettings} saveModelSettings={saveModelSettings} factDatasetId={factDataset?.dataset.id} onSelectFact={setSelectedFactId} />
+                : <ActualsView baseline={baseline} schema={schema} modelId={currentModelId} modelSettings={modelSettings} saveModelSettings={saveModelSettings} factDatasetId={factDataset?.dataset.id} onSelectFact={setSelectedFactId} factCandidates={factCandidates} />
           )}
           {tab === "scenarios" && (
             baselineError
@@ -4239,7 +4262,7 @@ export default function App() {
                 </div>
               : baselineLoading || (!apiBaseline && !!factDataset?.dataset.id)
                 ? <div style={{ textAlign: "center", padding: 40, color: C.textMuted }}>Loading data…</div>
-                : <ScenariosView baseline={baseline} scenarios={scenarios} setScenarios={handleSetScenarios} schema={schema} factDatasetId={factDataset?.dataset.id} relIds={relIds} modelId={currentModelId} modelSettings={modelSettings} saveModelSettings={saveModelSettings} onSelectFact={setSelectedFactId} />
+                : <ScenariosView baseline={baseline} scenarios={scenarios} setScenarios={handleSetScenarios} schema={schema} factDatasetId={factDataset?.dataset.id} relIds={relIds} modelId={currentModelId} modelSettings={modelSettings} saveModelSettings={saveModelSettings} onSelectFact={setSelectedFactId} factCandidates={factCandidates} />
           )}
         </div>
         <ChatPanel baseline={baseline} scenarios={scenarios} setScenarios={handleSetScenarios} setActiveTab={setTab} activeTab={tab} datasetId={factDataset?.dataset.id} onKnowledgeSaved={() => setKnowledgeRefreshKey(k => k + 1)} pendingOnboardingId={pendingOnboardingId} onOnboardingConsumed={() => setPendingOnboardingId(null)} modelId={currentModelId} />
