@@ -67,6 +67,23 @@ Set in `backend/.env` (copy from `.env.example`):
 | `UPLOAD_DIR`             | File upload path (default: `./uploads`)               |
 | `CORS_ORIGINS`           | Comma-separated allowed origins                       |
 
+## Documentation Maintenance Rule
+
+**All agents (including orchestrator) must keep documentation in sync with code changes.**
+When any change affects architecture, conventions, workflows, known issues, or testing,
+update the corresponding `.md` file before completing the task:
+
+| File | Update when... |
+|------|---------------|
+| `CLAUDE.md` | Project structure, tech stack, env vars, dev commands, or critical rules change |
+| `.claude/ARCHITECTURE.md` | Backend/frontend architecture, DB schema, API endpoints, or AI integration changes |
+| `.claude/CONVENTIONS.md` | Coding standards, naming patterns, or style rules change |
+| `.claude/PLAYBOOKS.md` | New task recipes are needed or existing workflows change |
+| `.claude/TROUBLESHOOTING.md` | New pitfalls are discovered or existing ones are resolved |
+| `.claude/TESTING.md` | Validation steps, test commands, or checklists change |
+
+This is a **blocking requirement** — do not mark a task as complete if affected docs are stale.
+
 ## Critical Rules
 
 1. **Polars, not pandas** — all data processing uses Polars. Never introduce pandas.
