@@ -187,6 +187,42 @@ TOOLS = [
         },
     },
     {
+        "name": "list_knowledge",
+        "description": (
+            "List knowledge entries saved about this data model. "
+            "Returns business term definitions, metric formulas, annotations, "
+            "and dataset mappings. Use this when the user asks about business "
+            "terms, what the data means, or what's in the knowledge base. "
+            "Also use this before creating scenario rules to find the correct "
+            "filter columns and values for business terms like 'revenue' or 'COGS'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entry_type": {
+                    "type": "string",
+                    "enum": [
+                        "term_definition",
+                        "interpretation_rule",
+                        "metric_definition",
+                        "annotation",
+                        "dataset_mapping",
+                        "relationship",
+                        "calculation",
+                        "transformation",
+                        "definition",
+                        "note",
+                    ],
+                    "description": "Optional: filter to a specific type of knowledge entry.",
+                },
+                "search": {
+                    "type": "string",
+                    "description": "Optional: search for entries containing this text.",
+                },
+            },
+        },
+    },
+    {
         "name": "list_scenarios",
         "description": (
             "List existing scenarios for this dataset. Use this BEFORE creating "
@@ -484,6 +520,7 @@ async def execute_tool(
     dataset_id: str = "",
     baseline_df: Any = None,
     all_table_names: dict[str, str] | None = None,
+    model_id: str = "",
 ) -> dict[str, Any]:
     """Execute a tool call and return the result dict.
 
@@ -520,7 +557,7 @@ async def execute_tool(
     elif tool_name == "save_knowledge":
         return _tool_save_knowledge(tool_input, dataset_id)
     elif tool_name == "list_knowledge":
-        return _tool_list_knowledge(tool_input, dataset_id)
+        return _tool_list_knowledge(tool_input, dataset_id=dataset_id, model_id=model_id)
     else:
         return {"error": f"Unknown tool: {tool_name}"}
 
@@ -831,18 +868,30 @@ def _tool_save_knowledge(inp: dict, dataset_id: str) -> dict:
         return {"error": str(exc)}
 
 
-def _tool_list_knowledge(inp: dict, dataset_id: str) -> dict:
-    """Return knowledge entries for the dataset (excludes rejected entries)."""
+def _tool_list_knowledge(inp: dict, dataset_id: str = "", model_id: str = "") -> dict:
+    """Return knowledge entries for the model/dataset (excludes rejected entries)."""
     from sqlalchemy import text
 
     entry_type_filter = inp.get("entry_type_filter") or inp.get("entry_type")
+    search = inp.get("search", "")
     try:
         with sync_engine.connect() as conn:
-            params: dict = {"ds_id": dataset_id}
-            where = "dataset_id = :ds_id AND (confidence IS NULL OR confidence != 'rejected')"
+            params: dict = {}
+            where_parts = ["(confidence IS NULL OR confidence != 'rejected')"]
+
+            # Prefer model_id scope; fall back to dataset_id
+            if model_id:
+                where_parts.append("(model_id = :model_id OR model_id IS NULL)")
+                params["model_id"] = model_id
+            elif dataset_id:
+                where_parts.append("(dataset_id = :ds_id OR dataset_id IS NULL)")
+                params["ds_id"] = dataset_id
+
             if entry_type_filter:
-                where += " AND entry_type = :etype"
+                where_parts.append("entry_type = :etype")
                 params["etype"] = entry_type_filter
+
+            where = " AND ".join(where_parts)
             rows = conn.execute(
                 text(f"""
                     SELECT id, entry_type, plain_text, confidence, source
@@ -853,12 +902,14 @@ def _tool_list_knowledge(inp: dict, dataset_id: str) -> dict:
                 params,
             ).fetchall()
 
+        results = [
+            {"id": r[0], "type": r[1], "summary": r[2], "confidence": r[3], "source": r[4]}
+            for r in rows
+            if not search or search.lower() in (r[2] or "").lower()
+        ]
         return {
-            "entries": [
-                {"id": r[0], "type": r[1], "summary": r[2], "confidence": r[3], "source": r[4]}
-                for r in rows
-            ],
-            "count": len(rows),
+            "entries": results,
+            "count": len(results),
         }
     except Exception as exc:
         logger.warning("Failed to list knowledge entries: %s", exc)
@@ -970,10 +1021,15 @@ def _build_system_prompt_from_context(context: str) -> str:
         "Always use the provided tools to query actual data — never guess numbers.\n\n"
         f"{context}\n\n"
         "<instructions>\n"
-        "- KNOWLEDGE: Check <knowledge> in the data context. If the user asks for a\n"
-        "  metric with a <calculation> entry, use the defined formula and filters.\n"
-        "  If they ask about cross-table analysis and there's a <relationship>,\n"
-        "  explain the relationship and any limitations.\n"
+        "- KNOWLEDGE BASE: The data context includes a <knowledge> section with business\n"
+        "  definitions, metrics, and notes saved by the Data Understanding Agent or the user.\n"
+        "  ALWAYS check the <knowledge> section before answering questions about business terms,\n"
+        "  metrics, or data relationships. If the user asks for a metric with a <calculation>\n"
+        "  entry, use the defined formula and filters. If they ask about cross-table analysis\n"
+        "  and there's a <relationship>, explain the relationship and any limitations.\n"
+        "  You can also call list_knowledge to explicitly retrieve all saved entries.\n"
+        "  When the user asks 'what do you know about this data?' or 'what's in the knowledge\n"
+        "  base?', call list_knowledge and summarize the results.\n"
         "- CRITICAL: When the user asks about cost categories, expense types, revenue, or any\n"
         "  business concept:\n"
         "  1. FIRST check <existing_groupings> — these are pre-existing columns from dimension\n"
@@ -1165,6 +1221,7 @@ async def stream_chat(
     baseline_df: Any = None,  # pl.DataFrame | None — enriched fact+dim join
     agent_mode: str = "scenario",  # "data_understanding" | "scenario" — set by frontend tab
     all_table_names: dict[str, str] | None = None,  # dataset_name → pg_table_name mapping
+    model_id: str = "",
 ) -> AsyncGenerator[str, None]:
     """Async generator that yields SSE events for one chat turn.
 
@@ -1311,6 +1368,7 @@ async def stream_chat(
                     tu["name"], tu["input"], table_name,
                     dataset_id=dataset_id, baseline_df=baseline_df,
                     all_table_names=all_table_names,
+                    model_id=model_id,
                 )
 
                 yield _sse_event({

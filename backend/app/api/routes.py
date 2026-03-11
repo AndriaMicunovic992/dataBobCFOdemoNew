@@ -1062,6 +1062,7 @@ async def model_chat(model_id: str, request: ChatRequest, db: AsyncSession = Dep
             baseline_df=baseline_df,
             agent_mode=request.agent_mode,
             all_table_names=all_table_names,
+            model_id=model_id,
         ),
         media_type="text/event-stream",
     )
@@ -2250,6 +2251,9 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
     )
     all_table_names = {ds.name: ds.table_name for ds in all_ds_result.scalars().all()}
 
+    # Resolve model_id from the dataset for knowledge queries
+    ds_model_id = dataset.model_id or ""
+
     return StreamingResponse(
         stream_chat(
             message=request.message,
@@ -2259,6 +2263,7 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
             baseline_df=baseline_df,
             agent_mode=request.agent_mode,
             all_table_names=all_table_names,
+            model_id=ds_model_id,
         ),
         media_type="text/event-stream",
     )
