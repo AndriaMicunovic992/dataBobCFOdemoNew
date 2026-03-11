@@ -50,12 +50,22 @@ TOOLS = [
             "Query the user's dataset.  Groups by the given columns and "
             "sums/averages the value column.  Returns max 50 rows.  "
             "Use this when the user asks about totals, breakdowns, "
-            "comparisons, or to find specific values."
+            "comparisons, or to find specific values.  "
+            "By default queries the main fact table baseline (with dimension joins).  "
+            "Set dataset_name to query a different table in the model."
         ),
         "input_schema": {
             "type": "object",
             "required": ["group_by", "value_column"],
             "properties": {
+                "dataset_name": {
+                    "type": "string",
+                    "description": (
+                        "Optional: name of a specific dataset to query instead of the main baseline. "
+                        "Use this when you need data from a different table (e.g., a second fact table). "
+                        "Must match a dataset name from the data context."
+                    ),
+                },
                 "group_by": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -154,12 +164,17 @@ TOOLS = [
         "description": (
             "Look up the unique values for a column (dimension).  "
             "Use this to verify column values before building filters, "
-            "or when the user asks 'what categories exist?'"
+            "or when the user asks 'what categories exist?'  "
+            "Set dataset_name to look up values from a specific table."
         ),
         "input_schema": {
             "type": "object",
             "required": ["column_name"],
             "properties": {
+                "dataset_name": {
+                    "type": "string",
+                    "description": "Optional: name of a specific dataset to query.",
+                },
                 "column_name": {
                     "type": "string",
                     "description": "Column to inspect",
@@ -275,12 +290,17 @@ DATA_UNDERSTANDING_TOOLS = [
         "name": "query_data",
         "description": (
             "Query the dataset to explore its structure and values. "
-            "Use this to understand what data exists before saving knowledge about it."
+            "Use this to understand what data exists before saving knowledge about it. "
+            "Set dataset_name to query a specific table in the model."
         ),
         "input_schema": {
             "type": "object",
             "required": ["group_by", "value_column"],
             "properties": {
+                "dataset_name": {
+                    "type": "string",
+                    "description": "Optional: name of a specific dataset to query.",
+                },
                 "group_by": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -304,11 +324,18 @@ DATA_UNDERSTANDING_TOOLS = [
     },
     {
         "name": "list_dimension_values",
-        "description": "Look up unique values for a column to understand the data.",
+        "description": (
+            "Look up unique values for a column to understand the data. "
+            "Set dataset_name to look up values from a specific table."
+        ),
         "input_schema": {
             "type": "object",
             "required": ["column_name"],
             "properties": {
+                "dataset_name": {
+                    "type": "string",
+                    "description": "Optional: name of a specific dataset to query.",
+                },
                 "column_name": {"type": "string"},
                 "search": {"type": "string"},
             },
@@ -424,12 +451,38 @@ def build_system_prompt(schema_info: dict) -> str:
 # Tool execution
 # ---------------------------------------------------------------------------
 
+def _resolve_dataset(
+    tool_input: dict,
+    default_table: str,
+    default_baseline_df: Any,
+    all_table_names: dict[str, str] | None,
+) -> tuple[str, Any]:
+    """Resolve dataset_name from tool input to (pg_table_name, baseline_df).
+
+    If dataset_name is specified and found in all_table_names, returns that
+    table's name and None for baseline_df (will be queried directly).
+    Otherwise returns the default fact baseline.
+    """
+    dataset_name = tool_input.get("dataset_name")
+    if not dataset_name or not all_table_names:
+        return default_table, default_baseline_df
+
+    pg_table = all_table_names.get(dataset_name)
+    if pg_table:
+        logger.info("Resolved dataset_name %r to table %s", dataset_name, pg_table)
+        return pg_table, None  # None = query raw table, not baseline
+
+    logger.warning("dataset_name %r not found, falling back to default", dataset_name)
+    return default_table, default_baseline_df
+
+
 async def execute_tool(
     tool_name: str,
     tool_input: dict,
     table_name: str,
     dataset_id: str = "",
     baseline_df: Any = None,
+    all_table_names: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Execute a tool call and return the result dict.
 
@@ -439,7 +492,10 @@ async def execute_tool(
     logger.info("Executing tool %s with input %s", tool_name, tool_input)
 
     if tool_name == "query_data":
-        return _tool_query_data(tool_input, table_name, baseline_df=baseline_df)
+        resolved_table, resolved_baseline = _resolve_dataset(
+            tool_input, table_name, baseline_df, all_table_names
+        )
+        return _tool_query_data(tool_input, resolved_table, baseline_df=resolved_baseline)
     elif tool_name == "create_scenario_rules":
         return _tool_create_scenario_rules(tool_input, table_name, baseline_df=baseline_df)
     elif tool_name == "create_scenario_rule":
@@ -450,8 +506,11 @@ async def execute_tool(
                                  if k not in ("scenario_id", "scenario_name", "base_config")}]
         return _tool_create_scenario_rules(wrapped, table_name, baseline_df=baseline_df)
     elif tool_name == "list_dimension_values":
+        resolved_table, resolved_baseline = _resolve_dataset(
+            tool_input, table_name, baseline_df, all_table_names
+        )
         return _tool_list_dimension_values(
-            tool_input, table_name, dataset_id=dataset_id, baseline_df=baseline_df
+            tool_input, resolved_table, dataset_id=dataset_id, baseline_df=resolved_baseline
         )
     elif tool_name == "list_scenarios":
         return _tool_list_scenarios(dataset_id)
@@ -918,6 +977,13 @@ def _build_system_prompt_from_context(context: str) -> str:
         "- When building scenario rules, ALWAYS use grouping/category columns for filters\n"
         "  when available, not numeric ID columns. The rule should be readable by a human.\n"
         "- When the user asks about their data, use query_data with the correct column names.\n"
+        "- MULTI-TABLE QUERIES: When the data context shows multiple datasets (tables), you can\n"
+        "  query any of them by setting dataset_name in query_data or list_dimension_values.\n"
+        "  If the user asks a question that spans two tables (e.g., 'cost per billable hour'\n"
+        "  needing GL costs + Tempo hours), query each table separately and combine the results\n"
+        "  in your reasoning. Do NOT try to join the tables — query each one and do the math.\n"
+        "  Example: total_cost = query GL filtered to personnel, total_hours = query Tempo,\n"
+        "  cost_per_hour = total_cost / total_hours.\n"
         "- When the user asks 'what if', create a scenario rule with create_scenario_rule.\n"
         "- When the user asks to project or forecast future periods (e.g. 'what if 2026 revenue\n"
         "  increases by 10%'), create an offset or multiplier rule with periodFrom/periodTo set\n"
@@ -1000,7 +1066,15 @@ def _build_data_understanding_prompt(context: str) -> str:
         "- save_knowledge: Save a knowledge entry permanently (relationship, calculation,\n"
         "  transformation, definition, or note)\n"
         "- list_knowledge: Check what's already been saved\n"
+        "- query_data: Query a dataset. Set dataset_name to query a specific table.\n"
+        "- list_dimension_values: Look up unique column values. Set dataset_name for a specific table.\n"
         "</tools>\n"
+        "<multi_table>\n"
+        "- MULTI-TABLE QUERIES: When the data context shows multiple datasets (tables), you can\n"
+        "  query any of them by setting dataset_name in query_data or list_dimension_values.\n"
+        "  If exploration requires data from multiple tables, query each one separately and\n"
+        "  combine the results in your reasoning. Do NOT try to join tables.\n"
+        "</multi_table>\n"
         "<behavior>\n"
         "SAVING KNOWLEDGE:\n"
         "When the user explains something about their data, save it using save_knowledge\n"
@@ -1078,6 +1152,7 @@ async def stream_chat(
     schema_info: dict | None = None,  # kept for backwards-compat; prefer context
     baseline_df: Any = None,  # pl.DataFrame | None — enriched fact+dim join
     agent_mode: str = "scenario",  # "data_understanding" | "scenario" — set by frontend tab
+    all_table_names: dict[str, str] | None = None,  # dataset_name → pg_table_name mapping
 ) -> AsyncGenerator[str, None]:
     """Async generator that yields SSE events for one chat turn.
 
@@ -1223,6 +1298,7 @@ async def stream_chat(
                 result = await execute_tool(
                     tu["name"], tu["input"], table_name,
                     dataset_id=dataset_id, baseline_df=baseline_df,
+                    all_table_names=all_table_names,
                 )
 
                 yield _sse_event({
