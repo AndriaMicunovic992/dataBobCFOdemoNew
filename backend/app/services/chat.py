@@ -472,7 +472,8 @@ def _resolve_dataset(
         logger.info("Resolved dataset_name %r to table %s", dataset_name, pg_table)
         return pg_table, None  # None = query raw table, not baseline
 
-    logger.warning("dataset_name %r not found, falling back to default", dataset_name)
+    logger.warning("dataset_name %r not found in %s, falling back to default",
+                   dataset_name, list(all_table_names.keys()))
     return default_table, default_baseline_df
 
 
@@ -537,7 +538,14 @@ def _tool_query_data(inp: dict, table_name: str, baseline_df: Any = None) -> dic
     if baseline_df is not None:
         df = baseline_df
     else:
-        df = storage_svc.read_dataset(sync_engine, table_name)
+        try:
+            df = storage_svc.read_dataset(sync_engine, table_name)
+        except Exception as e:
+            logger.error("Failed to read table %s: %s", table_name, e)
+            return {"error": f"Could not read table '{table_name}': {e}"}
+
+    if df is None or len(df) == 0:
+        return {"error": f"Table '{table_name}' is empty or not found"}
 
     # Apply filters
     for col_name, values in filters.items():
@@ -681,7 +689,11 @@ def _tool_list_dimension_values(
     if baseline_df is not None and col_name in baseline_df.columns:
         df = baseline_df.select([col_name])
     else:
-        df = storage_svc.read_dataset(sync_engine, table_name, columns=[col_name])
+        try:
+            df = storage_svc.read_dataset(sync_engine, table_name, columns=[col_name])
+        except Exception as e:
+            logger.error("Failed to read column %s from %s: %s", col_name, table_name, e)
+            return {"error": f"Could not read column '{col_name}' from table '{table_name}': {e}"}
 
     if col_name not in df.columns:
         return {"error": f"Column '{col_name}' not found"}
