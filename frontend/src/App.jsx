@@ -1500,7 +1500,7 @@ function SchemaView({ schema, setSchema, relationships, setRelationships, onOpen
 // ═══════════════════════════════════════════════════════════════
 // SAVED VIEWS BAR
 // ═══════════════════════════════════════════════════════════════
-function SavedViewsBar({ savedViews, onSave, onLoad, onDelete }) {
+function SavedViewsBar({ savedViews, onSave, onLoad, onDelete, factTableNames = {} }) {
   const [isNaming, setIsNaming] = useState(false);
   const [newName, setNewName] = useState("");
   const handleSave = () => {
@@ -1512,12 +1512,20 @@ function SavedViewsBar({ savedViews, onSave, onLoad, onDelete }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", marginBottom: 8, flexWrap: "wrap", fontSize: 13 }}>
       <span style={{ fontWeight: 600, color: C.textMuted, marginRight: 4 }}>Saved Views:</span>
-      {savedViews.map(v => (
-        <div key={v.id} style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 10px", borderRadius: 12, background: "#e8f0fe", color: C.brand, cursor: "pointer", fontSize: 12, fontWeight: 500, border: `1px solid ${C.brand}33` }}>
-          <span onClick={() => onLoad(v)} title="Load this view">{v.name}</span>
-          <span onClick={e => { e.stopPropagation(); onDelete(v.id); }} style={{ cursor: "pointer", opacity: 0.6, marginLeft: 2, fontSize: 11 }} title="Delete">×</span>
-        </div>
-      ))}
+      {savedViews.map(v => {
+        const tableName = v.factDatasetId ? factTableNames[v.factDatasetId] : null;
+        return (
+          <div key={v.id} style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 10px", borderRadius: 12, background: "#e8f0fe", color: C.brand, cursor: "pointer", fontSize: 12, fontWeight: 500, border: `1px solid ${C.brand}33` }}>
+            <span onClick={() => onLoad(v)} title={tableName ? `Load this view (${tableName})` : "Load this view"}>
+              {v.name}
+              {tableName && Object.keys(factTableNames).length > 1 && (
+                <span style={{ fontSize: 9, color: C.textMuted, marginLeft: 4 }}>({tableName})</span>
+              )}
+            </span>
+            <span onClick={e => { e.stopPropagation(); onDelete(v.id); }} style={{ cursor: "pointer", opacity: 0.6, marginLeft: 2, fontSize: 11 }} title="Delete">×</span>
+          </div>
+        );
+      })}
       {isNaming ? (
         <div style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
           <input value={newName} onChange={e => setNewName(e.target.value)}
@@ -1539,7 +1547,7 @@ function SavedViewsBar({ savedViews, onSave, onLoad, onDelete }) {
 // ═══════════════════════════════════════════════════════════════
 // ACTUALS VIEW
 // ═══════════════════════════════════════════════════════════════
-function ActualsView({ baseline, schema, modelId = null, modelSettings = {}, saveModelSettings }) {
+function ActualsView({ baseline, schema, modelId = null, modelSettings = {}, saveModelSettings, factDatasetId = null, onSelectFact = null }) {
   const dims = useMemo(() => getDimFields(baseline), [baseline]);
   const measures = useMemo(() => getMeasureFields(baseline, schema), [baseline, schema]);
 
@@ -1560,11 +1568,33 @@ function ActualsView({ baseline, schema, modelId = null, modelSettings = {}, sav
     }
     return null;
   }, [schema]);
+
+  const factTableNames = useMemo(() => {
+    const map = {};
+    for (const [tableName, tinfo] of Object.entries(schema || {})) {
+      if (tinfo.id) map[tinfo.id] = tableName;
+    }
+    return map;
+  }, [schema]);
+
   const [rowFs, setRowFs] = useState(() => []);
   const [colF, setColF] = useState("");
   const [valF, setValF] = useState(() => "");
   const [filters, setFilters] = useState({});
   const filtered = useMemo(() => applyFilters(baseline, filters), [baseline, filters]);
+
+  // Reset field selections when fact table changes
+  const baselineFingerprint = baseline.length > 0 ? Object.keys(baseline[0]).sort().join(",") : "";
+  const prevFingerprint = useRef(baselineFingerprint);
+  useEffect(() => {
+    if (prevFingerprint.current && prevFingerprint.current !== baselineFingerprint) {
+      setRowFs([]);
+      setColF("");
+      setValF("");
+      setFilters({});
+    }
+    prevFingerprint.current = baselineFingerprint;
+  }, [baselineFingerprint]);
 
   const savedViews = useMemo(() => modelSettings.actuals_views || [], [modelSettings.actuals_views]);
   const setSavedViews = useCallback((updater) => {
@@ -1582,9 +1612,25 @@ function ActualsView({ baseline, schema, modelId = null, modelSettings = {}, sav
       <div style={S.card}>
         <SavedViewsBar
           savedViews={savedViews}
-          onSave={name => setSavedViews(prev => [...prev, { id: String(Date.now()), name, rows: [...rowFs], columns: colF ? [colF] : [], values: valF ? [valF] : [], filters: structuredClone(filters), createdAt: Date.now() }])}
-          onLoad={view => { setRowFs(view.rows || []); setColF((view.columns || [])[0] || ""); setValF((view.values || [])[0] || ""); setFilters(view.filters || {}); }}
+          onSave={name => setSavedViews(prev => [...prev, {
+            id: String(Date.now()),
+            name,
+            factDatasetId: factDatasetId,
+            rows: [...rowFs],
+            columns: colF ? [colF] : [],
+            values: valF ? [valF] : [],
+            filters: structuredClone(filters),
+            createdAt: Date.now(),
+          }])}
+          onLoad={view => {
+            if (view.factDatasetId && onSelectFact) onSelectFact(view.factDatasetId);
+            setRowFs(view.rows || []);
+            setColF((view.columns || [])[0] || "");
+            setValF((view.values || [])[0] || "");
+            setFilters(view.filters || {});
+          }}
           onDelete={id => setSavedViews(prev => prev.filter(v => v.id !== id))}
+          factTableNames={factTableNames}
         />
         <div style={{ display: "grid", gridTemplateColumns: "2fr 2fr 1fr", gap: 14, marginBottom: 10 }}>
           <FieldManager label="Row Fields" allFields={dims} selected={rowFs} onChange={setRowFs} color={C.brand} fieldTableMap={fieldTableMap} factTableName={factTableName} />
@@ -1705,7 +1751,7 @@ function mergeWithCalendar(dataVals, field) {
   return [...new Set([...dataVals, ...calVals])].sort();
 }
 
-function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetId, relIds, modelId = null, modelSettings = {}, saveModelSettings }) {
+function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetId, relIds, modelId = null, modelSettings = {}, saveModelSettings, onSelectFact = null }) {
   const dims = useMemo(() => getDimFields(baseline), [baseline]);
   const measures = useMemo(() => getMeasureFields(baseline, schema), [baseline, schema]);
   const basePeriods = useMemo(() => getUniq(baseline, "_period"), [baseline]);
@@ -1728,12 +1774,33 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
     return null;
   }, [schema]);
 
+  const factTableNames = useMemo(() => {
+    const map = {};
+    for (const [tableName, tinfo] of Object.entries(schema || {})) {
+      if (tinfo.id) map[tinfo.id] = tableName;
+    }
+    return map;
+  }, [schema]);
+
   const [active, setActive] = useState(new Set());
   const [editId, setEditId] = useState(null);
   const [rowFs, setRowFs] = useState(() => []);
   const [colF, setColF] = useState("");
   const [valF, setValF] = useState(() => "");
   const [filters, setFilters] = useState({});
+
+  // Reset field selections when fact table changes
+  const baselineFingerprint = baseline.length > 0 ? Object.keys(baseline[0]).sort().join(",") : "";
+  const prevFingerprint = useRef(baselineFingerprint);
+  useEffect(() => {
+    if (prevFingerprint.current && prevFingerprint.current !== baselineFingerprint) {
+      setRowFs([]);
+      setColF("");
+      setValF("");
+      setFilters({});
+    }
+    prevFingerprint.current = baselineFingerprint;
+  }, [baselineFingerprint]);
 
   const savedViews = useMemo(() => modelSettings.scenario_views || [], [modelSettings.scenario_views]);
   const setSavedViews = useCallback((updater) => {
@@ -2060,9 +2127,25 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
       <div style={S.card}>
         <SavedViewsBar
           savedViews={savedViews}
-          onSave={name => setSavedViews(prev => [...prev, { id: String(Date.now()), name, rows: [...rowFs], columns: colF ? [colF] : [], values: valF ? [valF] : [], filters: structuredClone(filters), createdAt: Date.now() }])}
-          onLoad={view => { setRowFs(view.rows || []); setColF((view.columns || [])[0] || ""); setValF((view.values || [])[0] || ""); setFilters(view.filters || {}); }}
+          onSave={name => setSavedViews(prev => [...prev, {
+            id: String(Date.now()),
+            name,
+            factDatasetId: factDatasetId,
+            rows: [...rowFs],
+            columns: colF ? [colF] : [],
+            values: valF ? [valF] : [],
+            filters: structuredClone(filters),
+            createdAt: Date.now(),
+          }])}
+          onLoad={view => {
+            if (view.factDatasetId && onSelectFact) onSelectFact(view.factDatasetId);
+            setRowFs(view.rows || []);
+            setColF((view.columns || [])[0] || "");
+            setValF((view.values || [])[0] || "");
+            setFilters(view.filters || {});
+          }}
           onDelete={id => setSavedViews(prev => prev.filter(v => v.id !== id))}
+          factTableNames={factTableNames}
         />
         <div style={{ display: "grid", gridTemplateColumns: "2fr 2fr 1fr", gap: 14, marginBottom: 10 }}>
           <FieldManager label="Row Fields" allFields={dims} selected={rowFs} onChange={setRowFs} color={C.brand} fieldTableMap={fieldTableMap} factTableName={factTableName} />
@@ -3858,13 +3941,33 @@ export default function App() {
     }
   }, [schemaList]);
 
-  // ── Fact dataset (first dataset with a measure column) ──────────
-  const factDataset = useMemo(() => {
-    const found = schemaList.find(sr => sr.columns.some(c => c.column_role === "measure"));
-    // Skip the calendar as a fallback — prefer any real data table
-    const fallback = schemaList.find(sr => sr.dataset.name !== "_calendar") ?? schemaList[0];
-    return found ?? fallback;
+  // ── Fact dataset (user-selectable when multiple fact tables exist) ──────────
+  // All datasets that have at least one measure column (potential fact tables)
+  const factCandidates = useMemo(() => {
+    return schemaList.filter(sr =>
+      sr.columns.some(c => c.column_role === "measure") &&
+      sr.dataset.name !== "_calendar"
+    );
   }, [schemaList]);
+  // User-selected fact dataset ID
+  const [selectedFactId, setSelectedFactId] = useState(null);
+  // Reset selection when model changes
+  useEffect(() => {
+    setSelectedFactId(null);
+  }, [currentModelId]);
+  // Resolve the active fact dataset
+  const factDataset = useMemo(() => {
+    if (selectedFactId) {
+      const found = schemaList.find(sr => sr.dataset.id === selectedFactId);
+      if (found) return found;
+    }
+    const withMeasure = schemaList.find(sr =>
+      sr.columns.some(c => c.column_role === "measure") &&
+      sr.dataset.name !== "_calendar"
+    );
+    const fallback = schemaList.find(sr => sr.dataset.name !== "_calendar") ?? schemaList[0];
+    return withMeasure ?? fallback;
+  }, [schemaList, selectedFactId]);
 
   // ── Onboarding trigger — fire once per dataset when profiling completes ──
   const [pendingOnboardingId, setPendingOnboardingId] = useState(null);
@@ -4069,7 +4172,37 @@ export default function App() {
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <div style={{ fontSize: 12, color: C.textMuted, fontWeight: 500 }}>{datasetLabel}</div>
+          {factCandidates.length > 1 ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ fontSize: 11, color: C.textMuted, fontWeight: 500 }}>Fact table:</span>
+              <select
+                value={factDataset?.dataset.id || ""}
+                onChange={e => setSelectedFactId(e.target.value)}
+                style={{
+                  ...S.select,
+                  fontSize: 12,
+                  padding: "4px 8px",
+                  fontWeight: 600,
+                  color: C.brand,
+                  border: `1px solid ${C.brand}44`,
+                  background: C.brandLight,
+                  borderRadius: 6,
+                  maxWidth: 220,
+                }}
+              >
+                {factCandidates.map(sr => (
+                  <option key={sr.dataset.id} value={sr.dataset.id}>
+                    {sr.dataset.name} ({sr.dataset.row_count.toLocaleString()} rows)
+                  </option>
+                ))}
+              </select>
+              <span style={{ fontSize: 11, color: C.textMuted }}>
+                · {schemaList.length} table{schemaList.length !== 1 ? "s" : ""}
+              </span>
+            </div>
+          ) : (
+            <div style={{ fontSize: 12, color: C.textMuted, fontWeight: 500 }}>{datasetLabel}</div>
+          )}
           <button onClick={() => setShowHowItWorks(true)}
             onMouseEnter={e => e.currentTarget.style.color = C.brand}
             onMouseLeave={e => e.currentTarget.style.color = C.textMuted}
@@ -4096,7 +4229,7 @@ export default function App() {
                 </div>
               : baselineLoading || (!apiBaseline && !!factDataset?.dataset.id)
                 ? <div style={{ textAlign: "center", padding: 40, color: C.textMuted }}>Loading data…</div>
-                : <ActualsView baseline={baseline} schema={schema} modelId={currentModelId} modelSettings={modelSettings} saveModelSettings={saveModelSettings} />
+                : <ActualsView baseline={baseline} schema={schema} modelId={currentModelId} modelSettings={modelSettings} saveModelSettings={saveModelSettings} factDatasetId={factDataset?.dataset.id} onSelectFact={setSelectedFactId} />
           )}
           {tab === "scenarios" && (
             baselineError
@@ -4106,7 +4239,7 @@ export default function App() {
                 </div>
               : baselineLoading || (!apiBaseline && !!factDataset?.dataset.id)
                 ? <div style={{ textAlign: "center", padding: 40, color: C.textMuted }}>Loading data…</div>
-                : <ScenariosView baseline={baseline} scenarios={scenarios} setScenarios={handleSetScenarios} schema={schema} factDatasetId={factDataset?.dataset.id} relIds={relIds} modelId={currentModelId} modelSettings={modelSettings} saveModelSettings={saveModelSettings} />
+                : <ScenariosView baseline={baseline} scenarios={scenarios} setScenarios={handleSetScenarios} schema={schema} factDatasetId={factDataset?.dataset.id} relIds={relIds} modelId={currentModelId} modelSettings={modelSettings} saveModelSettings={saveModelSettings} onSelectFact={setSelectedFactId} />
           )}
         </div>
         <ChatPanel baseline={baseline} scenarios={scenarios} setScenarios={handleSetScenarios} setActiveTab={setTab} activeTab={tab} datasetId={factDataset?.dataset.id} onKnowledgeSaved={() => setKnowledgeRefreshKey(k => k + 1)} pendingOnboardingId={pendingOnboardingId} onOnboardingConsumed={() => setPendingOnboardingId(null)} modelId={currentModelId} />
