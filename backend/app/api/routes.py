@@ -927,6 +927,15 @@ async def model_chat(model_id: str, request: ChatRequest, db: AsyncSession = Dep
         logger.warning("Failed to build baseline for chat tools: %s", exc)
         baseline_df = None
 
+    # Build dataset name → table name mapping for multi-table queries
+    all_ds_result = await db.execute(
+        select(Dataset).where(
+            (Dataset.model_id == model_id) | (Dataset.model_id.is_(None)),
+            Dataset.status != "deleted",
+        )
+    )
+    all_table_names = {ds.name: ds.table_name for ds in all_ds_result.scalars().all()}
+
     return StreamingResponse(
         stream_chat(
             message=request.message,
@@ -935,6 +944,7 @@ async def model_chat(model_id: str, request: ChatRequest, db: AsyncSession = Dep
             context=context,
             baseline_df=baseline_df,
             agent_mode=request.agent_mode,
+            all_table_names=all_table_names,
         ),
         media_type="text/event-stream",
     )
@@ -1699,6 +1709,12 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
         logger.warning("Failed to build baseline for chat tools: %s", exc)
         baseline_df = None
 
+    # Build dataset name → table name mapping for multi-table queries
+    all_ds_result = await db.execute(
+        select(Dataset).where(Dataset.status != "deleted")
+    )
+    all_table_names = {ds.name: ds.table_name for ds in all_ds_result.scalars().all()}
+
     return StreamingResponse(
         stream_chat(
             message=request.message,
@@ -1707,6 +1723,7 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
             context=context,
             baseline_df=baseline_df,
             agent_mode=request.agent_mode,
+            all_table_names=all_table_names,
         ),
         media_type="text/event-stream",
     )

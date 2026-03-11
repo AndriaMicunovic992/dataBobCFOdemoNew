@@ -1406,7 +1406,7 @@ function SchemaView({ schema, setSchema, relationships, setRelationships, onOpen
 // ═══════════════════════════════════════════════════════════════
 // SAVED VIEWS BAR
 // ═══════════════════════════════════════════════════════════════
-function SavedViewsBar({ savedViews, onSave, onLoad, onDelete }) {
+function SavedViewsBar({ savedViews, onSave, onLoad, onDelete, factTableNames = {} }) {
   const [isNaming, setIsNaming] = useState(false);
   const [newName, setNewName] = useState("");
   const handleSave = () => {
@@ -1418,12 +1418,20 @@ function SavedViewsBar({ savedViews, onSave, onLoad, onDelete }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", marginBottom: 8, flexWrap: "wrap", fontSize: 13 }}>
       <span style={{ fontWeight: 600, color: C.textMuted, marginRight: 4 }}>Saved Views:</span>
-      {savedViews.map(v => (
-        <div key={v.id} style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 10px", borderRadius: 12, background: "#e8f0fe", color: C.brand, cursor: "pointer", fontSize: 12, fontWeight: 500, border: `1px solid ${C.brand}33` }}>
-          <span onClick={() => onLoad(v)} title="Load this view">{v.name}</span>
-          <span onClick={e => { e.stopPropagation(); onDelete(v.id); }} style={{ cursor: "pointer", opacity: 0.6, marginLeft: 2, fontSize: 11 }} title="Delete">×</span>
-        </div>
-      ))}
+      {savedViews.map(v => {
+        const tableName = v.factDatasetId ? factTableNames[v.factDatasetId] : null;
+        return (
+          <div key={v.id} style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 10px", borderRadius: 12, background: "#e8f0fe", color: C.brand, cursor: "pointer", fontSize: 12, fontWeight: 500, border: `1px solid ${C.brand}33` }}>
+            <span onClick={() => onLoad(v)} title={tableName ? `Load this view (${tableName})` : "Load this view"}>
+              {v.name}
+              {tableName && Object.keys(factTableNames).length > 1 && (
+                <span style={{ fontSize: 9, color: C.textMuted, marginLeft: 4 }}>({tableName})</span>
+              )}
+            </span>
+            <span onClick={e => { e.stopPropagation(); onDelete(v.id); }} style={{ cursor: "pointer", opacity: 0.6, marginLeft: 2, fontSize: 11 }} title="Delete">×</span>
+          </div>
+        );
+      })}
       {isNaming ? (
         <div style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
           <input value={newName} onChange={e => setNewName(e.target.value)}
@@ -1445,7 +1453,7 @@ function SavedViewsBar({ savedViews, onSave, onLoad, onDelete }) {
 // ═══════════════════════════════════════════════════════════════
 // ACTUALS VIEW
 // ═══════════════════════════════════════════════════════════════
-function ActualsView({ baseline, schema }) {
+function ActualsView({ baseline, schema, modelId = null, modelSettings = {}, saveModelSettings, factDatasetId = null, onSelectFact = null, factCandidates = [] }) {
   const dims = useMemo(() => getDimFields(baseline), [baseline]);
   const measures = useMemo(() => getMeasureFields(baseline, schema), [baseline, schema]);
   const [rowFs, setRowFs] = useState(() => []);
@@ -1453,6 +1461,27 @@ function ActualsView({ baseline, schema }) {
   const [valF, setValF] = useState(() => "");
   const [filters, setFilters] = useState({});
   const filtered = useMemo(() => applyFilters(baseline, filters), [baseline, filters]);
+
+  const factTableNames = useMemo(() => {
+    const map = {};
+    for (const [tableName, tinfo] of Object.entries(schema || {})) {
+      if (tinfo.id) map[tinfo.id] = tableName;
+    }
+    return map;
+  }, [schema]);
+
+  // Reset field selections when baseline columns change (user switched baseline)
+  const baselineFingerprint = baseline.length > 0 ? Object.keys(baseline[0]).sort().join(",") : "";
+  const prevFingerprint = useRef(baselineFingerprint);
+  useEffect(() => {
+    if (prevFingerprint.current && prevFingerprint.current !== baselineFingerprint) {
+      setRowFs([]);
+      setColF("");
+      setValF("");
+      setFilters({});
+    }
+    prevFingerprint.current = baselineFingerprint;
+  }, [baselineFingerprint]);
 
   const [savedViews, setSavedViews] = useState(() => {
     try { const v = localStorage.getItem("databobiq_saved_views_actuals"); return v ? JSON.parse(v) : []; }
@@ -1471,10 +1500,53 @@ function ActualsView({ baseline, schema }) {
       <div style={S.card}>
         <SavedViewsBar
           savedViews={savedViews}
-          onSave={name => setSavedViews(prev => [...prev, { id: String(Date.now()), name, rows: [...rowFs], columns: colF ? [colF] : [], values: valF ? [valF] : [], filters: structuredClone(filters), createdAt: Date.now() }])}
-          onLoad={view => { setRowFs(view.rows || []); setColF((view.columns || [])[0] || ""); setValF((view.values || [])[0] || ""); setFilters(view.filters || {}); }}
+          onSave={name => setSavedViews(prev => [...prev, {
+            id: String(Date.now()),
+            name,
+            factDatasetId: factDatasetId,
+            rows: [...rowFs],
+            columns: colF ? [colF] : [],
+            values: valF ? [valF] : [],
+            filters: structuredClone(filters),
+            createdAt: Date.now(),
+          }])}
+          onLoad={view => {
+            if (view.factDatasetId && onSelectFact) onSelectFact(view.factDatasetId);
+            setRowFs(view.rows || []);
+            setColF((view.columns || [])[0] || "");
+            setValF((view.values || [])[0] || "");
+            setFilters(view.filters || {});
+          }}
           onDelete={id => setSavedViews(prev => prev.filter(v => v.id !== id))}
+          factTableNames={factTableNames}
         />
+        {/* Baseline selector — only shown when multiple fact tables exist */}
+        {factCandidates.length > 1 && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, padding: "6px 10px", background: C.brandLight, borderRadius: 8, border: `1px solid ${C.brand}22` }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: C.brand }}>Baseline:</span>
+            <select
+              value={factDatasetId || ""}
+              onChange={e => onSelectFact && onSelectFact(e.target.value)}
+              style={{
+                ...S.select,
+                fontSize: 12,
+                padding: "4px 8px",
+                fontWeight: 600,
+                color: C.brand,
+                border: `1px solid ${C.brand}44`,
+                background: "#fff",
+                borderRadius: 6,
+                maxWidth: 280,
+              }}
+            >
+              {factCandidates.map(sr => (
+                <option key={sr.dataset.id} value={sr.dataset.id}>
+                  {sr.dataset.name} ({sr.dataset.row_count.toLocaleString()} rows)
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
         <div style={{ display: "grid", gridTemplateColumns: "2fr 2fr 1fr", gap: 14, marginBottom: 10 }}>
           <FieldManager label="Row Fields" allFields={dims} selected={rowFs} onChange={setRowFs} color={C.brand} />
           <FieldManager label="Column Field" allFields={dims.filter(f => !rowFs.includes(f))} selected={colF} onChange={setColF} color={C.purple} single />
@@ -1594,10 +1666,18 @@ function mergeWithCalendar(dataVals, field) {
   return [...new Set([...dataVals, ...calVals])].sort();
 }
 
-function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetId, relIds, modelId = null }) {
+function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetId, relIds, modelId = null, modelSettings = {}, saveModelSettings, onSelectFact = null, factCandidates = [] }) {
   const dims = useMemo(() => getDimFields(baseline), [baseline]);
   const measures = useMemo(() => getMeasureFields(baseline, schema), [baseline, schema]);
   const basePeriods = useMemo(() => getUniq(baseline, "_period"), [baseline]);
+
+  const factTableNames = useMemo(() => {
+    const map = {};
+    for (const [tableName, tinfo] of Object.entries(schema || {})) {
+      if (tinfo.id) map[tinfo.id] = tableName;
+    }
+    return map;
+  }, [schema]);
 
   const [active, setActive] = useState(new Set());
   const [editId, setEditId] = useState(null);
@@ -1605,6 +1685,19 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
   const [colF, setColF] = useState("");
   const [valF, setValF] = useState(() => "");
   const [filters, setFilters] = useState({});
+
+  // Reset field selections when baseline columns change (user switched baseline)
+  const baselineFingerprint = baseline.length > 0 ? Object.keys(baseline[0]).sort().join(",") : "";
+  const prevFingerprint = useRef(baselineFingerprint);
+  useEffect(() => {
+    if (prevFingerprint.current && prevFingerprint.current !== baselineFingerprint) {
+      setRowFs([]);
+      setColF("");
+      setValF("");
+      setFilters({});
+    }
+    prevFingerprint.current = baselineFingerprint;
+  }, [baselineFingerprint]);
 
   const [savedViews, setSavedViews] = useState(() => {
     try { const v = localStorage.getItem("databobiq_saved_views_scenario"); return v ? JSON.parse(v) : []; }
@@ -1932,10 +2025,52 @@ function ScenariosView({ baseline, scenarios, setScenarios, schema, factDatasetI
       <div style={S.card}>
         <SavedViewsBar
           savedViews={savedViews}
-          onSave={name => setSavedViews(prev => [...prev, { id: String(Date.now()), name, rows: [...rowFs], columns: colF ? [colF] : [], values: valF ? [valF] : [], filters: structuredClone(filters), createdAt: Date.now() }])}
-          onLoad={view => { setRowFs(view.rows || []); setColF((view.columns || [])[0] || ""); setValF((view.values || [])[0] || ""); setFilters(view.filters || {}); }}
+          onSave={name => setSavedViews(prev => [...prev, {
+            id: String(Date.now()),
+            name,
+            factDatasetId: factDatasetId,
+            rows: [...rowFs],
+            columns: colF ? [colF] : [],
+            values: valF ? [valF] : [],
+            filters: structuredClone(filters),
+            createdAt: Date.now(),
+          }])}
+          onLoad={view => {
+            if (view.factDatasetId && onSelectFact) onSelectFact(view.factDatasetId);
+            setRowFs(view.rows || []);
+            setColF((view.columns || [])[0] || "");
+            setValF((view.values || [])[0] || "");
+            setFilters(view.filters || {});
+          }}
           onDelete={id => setSavedViews(prev => prev.filter(v => v.id !== id))}
+          factTableNames={factTableNames}
         />
+        {factCandidates.length > 1 && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, padding: "6px 10px", background: C.brandLight, borderRadius: 8, border: `1px solid ${C.brand}22` }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: C.brand }}>Baseline:</span>
+            <select
+              value={factDatasetId || ""}
+              onChange={e => onSelectFact && onSelectFact(e.target.value)}
+              style={{
+                ...S.select,
+                fontSize: 12,
+                padding: "4px 8px",
+                fontWeight: 600,
+                color: C.brand,
+                border: `1px solid ${C.brand}44`,
+                background: "#fff",
+                borderRadius: 6,
+                maxWidth: 280,
+              }}
+            >
+              {factCandidates.map(sr => (
+                <option key={sr.dataset.id} value={sr.dataset.id}>
+                  {sr.dataset.name} ({sr.dataset.row_count.toLocaleString()} rows)
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
         <div style={{ display: "grid", gridTemplateColumns: "2fr 2fr 1fr", gap: 14, marginBottom: 10 }}>
           <FieldManager label="Row Fields" allFields={dims} selected={rowFs} onChange={setRowFs} color={C.brand} />
           <FieldManager label="Column Field" allFields={dims.filter(f => !rowFs.includes(f))} selected={colF} onChange={setColF} color={C.purple} single />
@@ -3636,11 +3771,35 @@ export default function App() {
     }
   }, [schemaList]);
 
-  // ── Fact dataset (first dataset with a measure column) ──────────
-  const factDataset = useMemo(
-    () => schemaList.find(sr => sr.columns.some(c => c.column_role === "measure")) ?? schemaList[0],
-    [schemaList]
-  );
+  // ── Fact dataset candidates (datasets with measure columns) ─────
+  const factCandidates = useMemo(() => {
+    return schemaList.filter(sr =>
+      sr.columns.some(c => c.column_role === "measure") &&
+      sr.dataset.name !== "_calendar"
+    );
+  }, [schemaList]);
+
+  // User-selected baseline dataset ID
+  const [selectedFactId, setSelectedFactId] = useState(null);
+
+  // Reset selection when model changes
+  useEffect(() => {
+    setSelectedFactId(null);
+  }, [currentModelId]);
+
+  // Resolve the active baseline dataset
+  const factDataset = useMemo(() => {
+    if (selectedFactId) {
+      const found = schemaList.find(sr => sr.dataset.id === selectedFactId);
+      if (found) return found;
+    }
+    const withMeasure = schemaList.find(sr =>
+      sr.columns.some(c => c.column_role === "measure") &&
+      sr.dataset.name !== "_calendar"
+    );
+    const fallback = schemaList.find(sr => sr.dataset.name !== "_calendar") ?? schemaList[0];
+    return withMeasure ?? fallback;
+  }, [schemaList, selectedFactId]);
 
   // ── Onboarding trigger — fire once per dataset when profiling completes ──
   const [pendingOnboardingId, setPendingOnboardingId] = useState(null);
@@ -3862,8 +4021,8 @@ export default function App() {
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
         <div style={{ flex: 1, overflow: "auto", padding: 24 }}>
           {tab === "schema" && <SchemaView schema={schema} setSchema={handleSetSchema} relationships={relationships} setRelationships={handleSetRelationships} onOpenUpload={() => setUploadOpen(true)} factDatasetId={factDataset?.dataset.id} knowledgeRefreshKey={knowledgeRefreshKey} modelId={currentModelId} />}
-          {tab === "actuals" && <ActualsView baseline={baseline} schema={schema} />}
-          {tab === "scenarios" && <ScenariosView baseline={baseline} scenarios={scenarios} setScenarios={handleSetScenarios} schema={schema} factDatasetId={factDataset?.dataset.id} relIds={relIds} modelId={currentModelId} />}
+          {tab === "actuals" && <ActualsView baseline={baseline} schema={schema} modelId={currentModelId} factDatasetId={factDataset?.dataset.id} onSelectFact={setSelectedFactId} factCandidates={factCandidates} />}
+          {tab === "scenarios" && <ScenariosView baseline={baseline} scenarios={scenarios} setScenarios={handleSetScenarios} schema={schema} factDatasetId={factDataset?.dataset.id} relIds={relIds} modelId={currentModelId} onSelectFact={setSelectedFactId} factCandidates={factCandidates} />}
         </div>
         <ChatPanel baseline={baseline} scenarios={scenarios} setScenarios={handleSetScenarios} setActiveTab={setTab} activeTab={tab} datasetId={factDataset?.dataset.id} onKnowledgeSaved={() => setKnowledgeRefreshKey(k => k + 1)} pendingOnboardingId={pendingOnboardingId} onOnboardingConsumed={() => setPendingOnboardingId(null)} modelId={currentModelId} />
       </div>
