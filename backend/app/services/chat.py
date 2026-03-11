@@ -492,12 +492,13 @@ def _resolve_dataset(
     default_table: str,
     default_baseline_df: Any,
     all_table_names: dict[str, str] | None,
+    all_baselines: dict[str, Any] | None = None,
 ) -> tuple[str, Any]:
     """Resolve dataset_name from tool input to (pg_table_name, baseline_df).
 
     If dataset_name is specified and found in all_table_names, returns that
-    table's name and None for baseline_df (will be queried directly).
-    Otherwise returns the default fact baseline.
+    table's pg_table_name and its pre-built baseline (if available in
+    all_baselines).  Otherwise returns the default fact baseline.
     """
     dataset_name = tool_input.get("dataset_name")
     if not dataset_name or not all_table_names:
@@ -506,7 +507,8 @@ def _resolve_dataset(
     pg_table = all_table_names.get(dataset_name)
     if pg_table:
         logger.info("Resolved dataset_name %r to table %s", dataset_name, pg_table)
-        return pg_table, None  # None = query raw table, not baseline
+        resolved_baseline = (all_baselines or {}).get(pg_table)
+        return pg_table, resolved_baseline
 
     logger.warning("dataset_name %r not found in %s, falling back to default",
                    dataset_name, list(all_table_names.keys()))
@@ -521,6 +523,7 @@ async def execute_tool(
     baseline_df: Any = None,
     all_table_names: dict[str, str] | None = None,
     model_id: str = "",
+    all_baselines: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Execute a tool call and return the result dict.
 
@@ -531,7 +534,8 @@ async def execute_tool(
 
     if tool_name == "query_data":
         resolved_table, resolved_baseline = _resolve_dataset(
-            tool_input, table_name, baseline_df, all_table_names
+            tool_input, table_name, baseline_df, all_table_names,
+            all_baselines=all_baselines,
         )
         return _tool_query_data(tool_input, resolved_table, baseline_df=resolved_baseline)
     elif tool_name == "create_scenario_rules":
@@ -1233,6 +1237,7 @@ async def stream_chat(
     agent_mode: str = "scenario",  # "data_understanding" | "scenario" — set by frontend tab
     all_table_names: dict[str, str] | None = None,  # dataset_name → pg_table_name mapping
     model_id: str = "",
+    all_baselines: dict[str, Any] | None = None,  # pg_table_name → baseline_df for all fact tables
 ) -> AsyncGenerator[str, None]:
     """Async generator that yields SSE events for one chat turn.
 
@@ -1380,6 +1385,7 @@ async def stream_chat(
                     dataset_id=dataset_id, baseline_df=baseline_df,
                     all_table_names=all_table_names,
                     model_id=model_id,
+                    all_baselines=all_baselines,
                 )
 
                 yield _sse_event({
