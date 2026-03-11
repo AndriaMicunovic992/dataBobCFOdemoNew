@@ -224,6 +224,19 @@ def apply_rules(
         logger.warning("value_column %r not found in DataFrame", value_column)
         return df
 
+    # Guard: ensure value_column is numeric before attempting scenario math
+    col_dtype = df[value_column].dtype
+    if col_dtype not in (pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64, pl.Decimal):
+        numeric_cols = [
+            c for c in df.columns
+            if df[c].dtype in (pl.Float32, pl.Float64, pl.Int32, pl.Int64)
+            and c != "_row_id"
+        ]
+        raise ValueError(
+            f"Column '{value_column}' is not numeric (type: {col_dtype}). "
+            f"Available numeric columns: {numeric_cols}"
+        )
+
     # Preserve originals before any modification
     baseline_col = f"baseline_{value_column}"
     if baseline_col not in df.columns:
