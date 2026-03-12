@@ -276,6 +276,16 @@ async def _build_baseline_df(
             dim_df = storage_svc.read_dataset(sync_engine, dim_dataset.table_name)
             # Drop _row_id from dimension
             dim_df = dim_df.drop("_row_id", strict=False)
+            # Deduplicate dimension on join column to prevent fan-out.
+            # LEFT JOIN with non-unique keys multiplies fact rows, inflating
+            # aggregations in the pivot table and query_data tool.
+            pre_dedup = dim_df.height
+            dim_df = dim_df.unique(subset=[dim_join_col], keep="first")
+            if dim_df.height < pre_dedup:
+                logger.info(
+                    "Deduplicated %s on %s: %d → %d rows",
+                    dim_name, dim_join_col, pre_dedup, dim_df.height,
+                )
             # Rename clashing non-join columns with table prefix
             dim_name = dim_dataset.name
             rename_map: dict[str, str] = {}
@@ -290,13 +300,20 @@ async def _build_baseline_df(
                     df = df.with_columns(pl.col(join_col_in_baseline).cast(pl.Utf8, strict=False))
                 if dim_df[dim_join_col].dtype != pl.Utf8:
                     dim_df = dim_df.with_columns(pl.col(dim_join_col).cast(pl.Utf8, strict=False))
+                pre_join_rows = df.height
                 df = df.join(dim_df, left_on=join_col_in_baseline, right_on=dim_join_col, how="left")
                 joined_dataset_ids.add(dim_dataset_id)
                 joined_any = True
-                logger.info(
-                    "Joined %s via %s.%s = %s.%s (depth %d)",
-                    dim_name, "baseline", join_col_in_baseline, dim_name, dim_join_col, _depth,
-                )
+                if df.height > pre_join_rows:
+                    logger.warning(
+                        "Join with %s caused row fan-out: %d → %d rows (depth %d)",
+                        dim_name, pre_join_rows, df.height, _depth,
+                    )
+                else:
+                    logger.info(
+                        "Joined %s via %s.%s = %s.%s (depth %d, rows %d)",
+                        dim_name, "baseline", join_col_in_baseline, dim_name, dim_join_col, _depth, df.height,
+                    )
             except Exception as exc:
                 logger.warning("Join on %s.%s failed: %s", dim_dataset.name, dim_join_col, exc)
             used_rel_ids.add(rel.id)

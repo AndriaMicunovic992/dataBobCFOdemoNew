@@ -98,6 +98,22 @@ work because those columns only exist in the joined baseline, not the raw table.
 4. The `all_baselines` dict flows through `stream_chat()` → `execute_tool()`
    → `_resolve_dataset()` → `_tool_query_data()`.
 
+### Baseline row fan-out from LEFT JOINs with non-unique dimension keys
+**Problem**: `_build_baseline_df()` LEFT JOINs dimension tables onto the fact
+table. If a dimension table has non-unique values on the join column, each
+matching fact row is duplicated — creating a fan-out. This inflates all
+aggregations: the pivot table, chart, and `query_data` tool all sum duplicated
+rows, producing values that are N× too high (where N is the average number of
+duplicate dimension rows per key).
+
+**Root cause**: Dimension tables loaded via `storage_svc.read_dataset()` were
+joined as-is, without ensuring uniqueness on the join column.
+
+**Fix** (applied): Before each LEFT JOIN in `_build_baseline_df()`, the
+dimension DataFrame is deduplicated on its join column using
+`dim_df.unique(subset=[dim_join_col], keep="first")`. A warning is also logged
+if a join still causes row count increase, for early detection.
+
 ### Negative value sign convention
 **Problem**: In German accounting data, expenses are typically stored as negative
 values. "Increase costs by 300K" means offset = -300000 (more negative).
