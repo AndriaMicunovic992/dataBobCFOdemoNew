@@ -1023,33 +1023,51 @@ async def model_chat(model_id: str, request: ChatRequest, db: AsyncSession = Dep
     if not settings.ANTHROPIC_API_KEY_CHAT:
         raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY_CHAT is not configured")
 
-    all_rel_result = await db.execute(
-        select(DatasetRelationship).where(
-            (DatasetRelationship.source_dataset_id == dataset.id) |
-            (DatasetRelationship.target_dataset_id == dataset.id)
-        )
-    )
-    all_rels = all_rel_result.scalars().all()
-
-    all_rel_refs = [RelationshipRef(rel_id=r.id) for r in all_rels]
-    try:
-        baseline_df = await _build_baseline_df(dataset, all_rel_refs, db)
-    except Exception as exc:
-        logger.warning("Failed to build baseline for chat tools: %s", exc)
-        baseline_df = None
-
-    # Include ALL model datasets in AI context so the agent can query any table
+    # Include ALL model datasets so the agent can see and query any table
     all_ds_result = await db.execute(
         select(Dataset).where(
             (Dataset.model_id == model_id) | (Dataset.model_id.is_(None)),
             Dataset.status != "deleted",
-        )
+        ).options(selectinload(Dataset.columns))
     )
     all_model_datasets = all_ds_result.scalars().all()
     all_dataset_ids = [ds.id for ds in all_model_datasets]
     all_table_names = {ds.name: ds.table_name for ds in all_model_datasets}
 
     context = await build_agent_context(all_dataset_ids, db)
+
+    # Build baselines for ALL fact datasets (those that have relationships)
+    # so the agent can query any fact table with dimension joins.
+    all_baselines: dict[str, Any] = {}
+    all_rels_result = await db.execute(
+        select(DatasetRelationship).where(
+            DatasetRelationship.source_dataset_id.in_(all_dataset_ids) |
+            DatasetRelationship.target_dataset_id.in_(all_dataset_ids)
+        )
+    )
+    all_rels = all_rels_result.scalars().all()
+
+    # Group relationships by dataset — a fact dataset is one that appears
+    # as a source or target in at least one relationship.
+    ds_by_id = {ds.id: ds for ds in all_model_datasets}
+    rels_by_ds: dict[str, list[DatasetRelationship]] = {}
+    for r in all_rels:
+        rels_by_ds.setdefault(r.source_dataset_id, []).append(r)
+        rels_by_ds.setdefault(r.target_dataset_id, []).append(r)
+
+    for ds_id, ds_rels in rels_by_ds.items():
+        ds_obj = ds_by_id.get(ds_id)
+        if ds_obj is None:
+            continue
+        rel_refs = [RelationshipRef(rel_id=r.id) for r in ds_rels]
+        try:
+            bl = await _build_baseline_df(ds_obj, rel_refs, db)
+            all_baselines[ds_obj.table_name] = bl
+        except Exception as exc:
+            logger.warning("Failed to build baseline for %s: %s", ds_obj.name, exc)
+
+    # The selected dataset's baseline (for default queries)
+    baseline_df = all_baselines.get(dataset.table_name)
 
     return StreamingResponse(
         stream_chat(
@@ -1061,6 +1079,7 @@ async def model_chat(model_id: str, request: ChatRequest, db: AsyncSession = Dep
             agent_mode=request.agent_mode,
             all_table_names=all_table_names,
             model_id=model_id,
+            all_baselines=all_baselines,
         ),
         media_type="text/event-stream",
     )
@@ -2221,23 +2240,6 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
     if not settings.ANTHROPIC_API_KEY_CHAT:
         raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY_CHAT is not configured")
 
-    # Load relationships for the selected dataset (used for baseline join)
-    all_rel_result = await db.execute(
-        select(DatasetRelationship).where(
-            (DatasetRelationship.source_dataset_id == dataset.id) |
-            (DatasetRelationship.target_dataset_id == dataset.id)
-        )
-    )
-    all_rels = all_rel_result.scalars().all()
-
-    # Build enriched baseline so chat tools can see dimension-joined columns
-    all_rel_refs = [RelationshipRef(rel_id=r.id) for r in all_rels]
-    try:
-        baseline_df = await _build_baseline_df(dataset, all_rel_refs, db)
-    except Exception as exc:
-        logger.warning("Failed to build baseline for chat tools: %s", exc)
-        baseline_df = None
-
     # Include ALL datasets (model-scoped or global) in AI context so the agent
     # can see and query any fact table, not just the selected one.
     ds_model_id = dataset.model_id or ""
@@ -2246,17 +2248,47 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
             select(Dataset).where(
                 (Dataset.model_id == ds_model_id) | (Dataset.model_id.is_(None)),
                 Dataset.status != "deleted",
-            )
+            ).options(selectinload(Dataset.columns))
         )
     else:
         all_ds_result = await db.execute(
             select(Dataset).where(Dataset.status != "deleted")
+            .options(selectinload(Dataset.columns))
         )
     all_model_datasets = all_ds_result.scalars().all()
     all_dataset_ids = [ds.id for ds in all_model_datasets]
     all_table_names = {ds.name: ds.table_name for ds in all_model_datasets}
 
     context = await build_agent_context(all_dataset_ids, db)
+
+    # Build baselines for ALL fact datasets (those with relationships)
+    all_baselines: dict[str, Any] = {}
+    all_rels_result = await db.execute(
+        select(DatasetRelationship).where(
+            DatasetRelationship.source_dataset_id.in_(all_dataset_ids) |
+            DatasetRelationship.target_dataset_id.in_(all_dataset_ids)
+        )
+    )
+    all_rels = all_rels_result.scalars().all()
+
+    ds_by_id = {ds.id: ds for ds in all_model_datasets}
+    rels_by_ds: dict[str, list[DatasetRelationship]] = {}
+    for r in all_rels:
+        rels_by_ds.setdefault(r.source_dataset_id, []).append(r)
+        rels_by_ds.setdefault(r.target_dataset_id, []).append(r)
+
+    for ds_id, ds_rels in rels_by_ds.items():
+        ds_obj = ds_by_id.get(ds_id)
+        if ds_obj is None:
+            continue
+        rel_refs = [RelationshipRef(rel_id=r.id) for r in ds_rels]
+        try:
+            bl = await _build_baseline_df(ds_obj, rel_refs, db)
+            all_baselines[ds_obj.table_name] = bl
+        except Exception as exc:
+            logger.warning("Failed to build baseline for %s: %s", ds_obj.name, exc)
+
+    baseline_df = all_baselines.get(dataset.table_name)
 
     return StreamingResponse(
         stream_chat(
@@ -2268,6 +2300,7 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
             agent_mode=request.agent_mode,
             all_table_names=all_table_names,
             model_id=ds_model_id,
+            all_baselines=all_baselines,
         ),
         media_type="text/event-stream",
     )

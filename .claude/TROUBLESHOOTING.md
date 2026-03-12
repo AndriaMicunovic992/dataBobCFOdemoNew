@@ -76,21 +76,27 @@ trigger re-analysis via the `/reanalyze` endpoint.
 If this happens frequently, the tool descriptions may be ambiguous — Claude
 doesn't know when to stop. Clarify tool descriptions.
 
-### Chat agent can't see non-selected fact tables
-**Problem**: The chat agent could only query the fact table selected in the
-baseline selector. Other fact tables in the model were invisible — their schema
-wasn't included in the AI context, so the agent couldn't reference them.
+### Chat agent can't query non-selected fact tables with dimension filters
+**Problem**: The chat agent could only correctly query the fact table selected
+in the baseline selector. Other fact tables in the model were either invisible
+(schema not in AI context) or queryable only as raw tables without dimension
+joins — meaning filters like `level_1` (from a hierarchy dimension) wouldn't
+work because those columns only exist in the joined baseline, not the raw table.
 
-**Root cause**: Both `/chat` and `/models/{model_id}/chat` endpoints built the
-AI context using only `related_ids` (selected dataset + its joined dimensions).
-Other fact tables in the same model were excluded from `build_agent_context()`.
+**Root cause**: Two issues in both `/chat` and `/models/{model_id}/chat`:
+1. AI context was built using only `related_ids` (selected dataset + its
+   joined dimensions), so other fact tables were invisible to the agent.
+2. `_resolve_dataset()` returned `baseline_df=None` for non-selected datasets,
+   causing `query_data` to read the raw table without dimension joins.
 
-**Fix** (applied): Changed both endpoints to pass ALL model dataset IDs to
-`build_agent_context()`, not just relationship-linked ones. The baseline_df is
-still built from the selected dataset's relationships (for dimension joins),
-but the AI context now describes every dataset in the model. The `query_data`
-tool already supported querying other tables via `_resolve_dataset()` +
-`all_table_names`, so no changes were needed in `chat.py`.
+**Fix** (applied):
+1. Both endpoints now pass ALL model dataset IDs to `build_agent_context()`.
+2. Both endpoints pre-build baselines for ALL datasets that have relationships,
+   stored in `all_baselines: dict[pg_table_name, DataFrame]`.
+3. `_resolve_dataset()` looks up the correct baseline from `all_baselines`
+   instead of returning `None` for non-default datasets.
+4. The `all_baselines` dict flows through `stream_chat()` → `execute_tool()`
+   → `_resolve_dataset()` → `_tool_query_data()`.
 
 ### Negative value sign convention
 **Problem**: In German accounting data, expenses are typically stored as negative
