@@ -276,6 +276,7 @@ async def _build_baseline_df(
             dim_df = storage_svc.read_dataset(sync_engine, dim_dataset.table_name)
             # Drop _row_id from dimension
             dim_df = dim_df.drop("_row_id", strict=False)
+            dim_name = dim_dataset.name
             # Deduplicate dimension on join column to prevent fan-out.
             # LEFT JOIN with non-unique keys multiplies fact rows, inflating
             # aggregations in the pivot table and query_data tool.
@@ -287,7 +288,6 @@ async def _build_baseline_df(
                     dim_name, dim_join_col, pre_dedup, dim_df.height,
                 )
             # Rename clashing non-join columns with table prefix
-            dim_name = dim_dataset.name
             rename_map: dict[str, str] = {}
             for c in dim_df.columns:
                 if c != dim_join_col and c in df.columns:
