@@ -97,6 +97,13 @@ work because those columns only exist in the joined baseline, not the raw table.
    instead of returning `None` for non-default datasets.
 4. The `all_baselines` dict flows through `stream_chat()` → `execute_tool()`
    → `_resolve_dataset()` → `_tool_query_data()`.
+5. `list_dimension_values` now also passes `all_baselines` to
+   `_resolve_dataset()` (was previously missing — dimension columns from
+   joins were invisible when querying non-selected fact tables).
+6. Both endpoints build `all_ds_id_by_table: dict[pg_table_name, dataset_id]`
+   and pass it through as `all_dataset_ids`. When `list_dimension_values`
+   resolves to a non-selected table, it uses the correct `dataset_id` for
+   semantic label lookups instead of the selected dataset's ID.
 
 ### Baseline row fan-out from LEFT JOINs with non-unique dimension keys
 **Problem**: `_build_baseline_df()` LEFT JOINs dimension tables onto the fact
