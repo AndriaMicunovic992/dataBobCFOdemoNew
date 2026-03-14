@@ -1050,6 +1050,8 @@ async def model_chat(model_id: str, request: ChatRequest, db: AsyncSession = Dep
     all_model_datasets = all_ds_result.scalars().all()
     all_dataset_ids = [ds.id for ds in all_model_datasets]
     all_table_names = {ds.name: ds.table_name for ds in all_model_datasets}
+    # Reverse mapping: pg_table_name → dataset_id for resolving non-selected datasets
+    all_ds_id_by_table = {ds.table_name: ds.id for ds in all_model_datasets}
 
     context = await build_agent_context(all_dataset_ids, db)
 
@@ -1097,6 +1099,7 @@ async def model_chat(model_id: str, request: ChatRequest, db: AsyncSession = Dep
             all_table_names=all_table_names,
             model_id=model_id,
             all_baselines=all_baselines,
+            all_dataset_ids=all_ds_id_by_table,
         ),
         media_type="text/event-stream",
     )
@@ -2275,6 +2278,8 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
     all_model_datasets = all_ds_result.scalars().all()
     all_dataset_ids = [ds.id for ds in all_model_datasets]
     all_table_names = {ds.name: ds.table_name for ds in all_model_datasets}
+    # Reverse mapping: pg_table_name → dataset_id for resolving non-selected datasets
+    all_ds_id_by_table = {ds.table_name: ds.id for ds in all_model_datasets}
 
     context = await build_agent_context(all_dataset_ids, db)
 
@@ -2318,6 +2323,7 @@ async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
             all_table_names=all_table_names,
             model_id=ds_model_id,
             all_baselines=all_baselines,
+            all_dataset_ids=all_ds_id_by_table,
         ),
         media_type="text/event-stream",
     )

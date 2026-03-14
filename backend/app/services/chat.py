@@ -524,6 +524,7 @@ async def execute_tool(
     all_table_names: dict[str, str] | None = None,
     model_id: str = "",
     all_baselines: dict[str, Any] | None = None,
+    all_dataset_ids: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Execute a tool call and return the result dict.
 
@@ -549,10 +550,14 @@ async def execute_tool(
         return _tool_create_scenario_rules(wrapped, table_name, baseline_df=baseline_df)
     elif tool_name == "list_dimension_values":
         resolved_table, resolved_baseline = _resolve_dataset(
-            tool_input, table_name, baseline_df, all_table_names
+            tool_input, table_name, baseline_df, all_table_names,
+            all_baselines=all_baselines,
         )
+        resolved_ds_id = dataset_id
+        if resolved_table != table_name and all_dataset_ids:
+            resolved_ds_id = all_dataset_ids.get(resolved_table, dataset_id)
         return _tool_list_dimension_values(
-            tool_input, resolved_table, dataset_id=dataset_id, baseline_df=resolved_baseline
+            tool_input, resolved_table, dataset_id=resolved_ds_id, baseline_df=resolved_baseline
         )
     elif tool_name == "list_scenarios":
         return _tool_list_scenarios(dataset_id)
@@ -1238,6 +1243,7 @@ async def stream_chat(
     all_table_names: dict[str, str] | None = None,  # dataset_name → pg_table_name mapping
     model_id: str = "",
     all_baselines: dict[str, Any] | None = None,  # pg_table_name → baseline_df for all fact tables
+    all_dataset_ids: dict[str, str] | None = None,  # pg_table_name → dataset_id for all datasets
 ) -> AsyncGenerator[str, None]:
     """Async generator that yields SSE events for one chat turn.
 
@@ -1386,6 +1392,7 @@ async def stream_chat(
                     all_table_names=all_table_names,
                     model_id=model_id,
                     all_baselines=all_baselines,
+                    all_dataset_ids=all_dataset_ids,
                 )
 
                 yield _sse_event({
